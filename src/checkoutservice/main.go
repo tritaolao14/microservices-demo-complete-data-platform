@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -24,6 +25,7 @@ import (
 	"cloud.google.com/go/profiler"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
+	"github.com/segmentio/kafka-go"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -45,6 +47,7 @@ import (
 const (
 	listenPort  = "5050"
 	usdCurrency = "USD"
+	kafkaTopic  = "orders"
 )
 
 var log *logrus.Logger
@@ -83,6 +86,8 @@ type checkoutService struct {
 
 	paymentSvcAddr string
 	paymentSvcConn *grpc.ClientConn
+
+	kafkaWriter *kafka.Writer
 }
 
 func main() {
@@ -121,6 +126,19 @@ func main() {
 	mustConnGRPC(ctx, &svc.currencySvcConn, svc.currencySvcAddr)
 	mustConnGRPC(ctx, &svc.emailSvcConn, svc.emailSvcAddr)
 	mustConnGRPC(ctx, &svc.paymentSvcConn, svc.paymentSvcAddr)
+
+	// Initialize Kafka writer
+	kafkaBroker := os.Getenv("KAFKA_BROKER")
+	if kafkaBroker == "" {
+		kafkaBroker = "kafka:9092"
+	}
+	svc.kafkaWriter = kafka.NewWriter(kafka.WriterConfig{
+		Brokers:  []string{kafkaBroker},
+		Topic:    kafkaTopic,
+		Balancer: &kafka.LeastBytes{},
+	})
+	defer svc.kafkaWriter.Close()
+	log.Infof("Kafka writer initialized for topic %s on broker %s", kafkaTopic, kafkaBroker)
 
 	log.Infof("service config: %+v", svc)
 
@@ -270,6 +288,12 @@ func (cs *checkoutService) PlaceOrder(ctx context.Context, req *pb.PlaceOrderReq
 		Items:              prep.orderItems,
 	}
 
+	// Publish order event to Kafka
+	if err := cs.publishOrderEvent(ctx, orderResult); err != nil {
+		log.Warnf("failed to publish order event to Kafka: %+v", err)
+		// Continue with order processing even if Kafka publish fails
+	}
+
 	if err := cs.sendOrderConfirmation(ctx, req.Email, orderResult); err != nil {
 		log.Warnf("failed to send order confirmation to %q: %+v", req.Email, err)
 	} else {
@@ -391,4 +415,44 @@ func (cs *checkoutService) shipOrder(ctx context.Context, address *pb.Address, i
 		return "", fmt.Errorf("shipment failed: %+v", err)
 	}
 	return resp.GetTrackingId(), nil
+}
+
+func (cs *checkoutService) publishOrderEvent(ctx context.Context, order *pb.OrderResult) error {
+	orderEvent := map[string]interface{}{
+		"order_id":             order.OrderId,
+		"shipping_tracking_id": order.ShippingTrackingId,
+		"shipping_cost":        order.ShippingCost,
+		"shipping_address":     order.ShippingAddress,
+		"items":                order.Items,
+		"timestamp":            time.Now().UTC().Format(time.RFC3339),
+	}
+
+	messageBytes, err := json.Marshal(orderEvent)
+	if err != nil {
+		return fmt.Errorf("failed to marshal order event: %w", err)
+	}
+
+	message := kafka.Message{
+		Key:   []byte(order.OrderId),
+		Value: messageBytes,
+		Time:  time.Now(),
+	}
+
+	// Retry logic with exponential backoff
+	maxRetries := 3
+	for i := 0; i < maxRetries; i++ {
+		err := cs.kafkaWriter.WriteMessages(ctx, message)
+		if err == nil {
+			log.Infof("Successfully published order event for order_id: %s", order.OrderId)
+			return nil
+		}
+
+		log.Warnf("Failed to publish order event (attempt %d/%d): %v", i+1, maxRetries, err)
+		if i < maxRetries-1 {
+			backoff := time.Duration(i+1) * time.Second
+			time.Sleep(backoff)
+		}
+	}
+
+	return fmt.Errorf("failed to publish order event after %d retries: %w", maxRetries, err)
 }
