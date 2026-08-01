@@ -23,7 +23,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 RUN apk update \
-    && apk add --no-cache g++ linux-headers \
+    && apk add --no-cache g++ linux-headers postgresql-dev \
     && rm -rf /var/cache/apk/*
 
 COPY requirements.txt .
@@ -36,7 +36,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 RUN apk update \
-    && apk add --no-cache libstdc++ \
+    && apk add --no-cache libstdc++ libpq \
     && rm -rf /var/cache/apk/*
 
 WORKDIR /loadgen

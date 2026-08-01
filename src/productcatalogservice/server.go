@@ -26,6 +26,7 @@ import (
 	"time"
 
 	pb "github.com/GoogleCloudPlatform/microservices-demo/src/productcatalogservice/genproto"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -134,11 +135,16 @@ func run(port string) string {
 	srv = grpc.NewServer(
 		grpc.StatsHandler(otelgrpc.NewServerHandler()))
 
-	svc := &productCatalog{}
-	err = loadCatalog(&svc.catalog)
-	if err != nil {
-		log.Fatalf("could not parse product catalog: %v", err)
+	dsn := os.Getenv("POSTGRES_DSN")
+	if dsn == "" {
+		dsn = "postgresql://boutique:boutique_pass@postgres:5432/product_catalog"
 	}
+	dbPool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		log.Fatalf("could not connect to postgresql: %v", err)
+	}
+
+	svc := &productCatalog{db: dbPool}
 
 	pb.RegisterProductCatalogServiceServer(srv, svc)
 	healthcheck := health.NewServer()

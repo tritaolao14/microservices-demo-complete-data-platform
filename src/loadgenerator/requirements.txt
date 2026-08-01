@@ -98,3 +98,4 @@ zope-event==6.0
     # via gevent
 zope-interface==8.0
     # via gevent
+pg8000==1.31.2

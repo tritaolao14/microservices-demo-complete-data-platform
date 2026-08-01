@@ -1,0 +1,97 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: local-cdn-config
+data:
+  nginx.conf: |
+    user  nginx;
+    worker_processes  auto;
+
+    error_log  /var/log/nginx/error.log notice;
+    pid        /var/run/nginx.pid;
+
+    events {
+        worker_connections  1024;
+    }
+
+    http {
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+
+        log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                          '$status $body_bytes_sent "$http_referer" '
+                          '"$http_user_agent" "$http_x_forwarded_for" '
+                          'rt=$request_time uct="$upstream_connect_time" uht="$upstream_header_time" urt="$upstream_response_time" '
+                          'cache_status=$upstream_cache_status';
+
+        access_log  /var/log/nginx/access.log  main;
+        sendfile        on;
+        keepalive_timeout  65;
+
+        # Caching configuration
+        proxy_cache_path /var/cache/nginx levels=1:2 keys_zone=my_cache:10m max_size=1g inactive=60m use_temp_path=off;
+
+        server {
+            listen       80;
+            server_name  localhost;
+
+            location /images/ {
+                # Proxy to MinIO unstructured bucket
+                # URL mapping: /images/foo.jpg -> /datalake-unstructured/product-images/foo.jpg
+                rewrite ^/images/(.*)$ /datalake-unstructured/product-images/$1 break;
+                
+                proxy_pass http://minio:9000;
+                proxy_cache my_cache;
+                proxy_cache_use_stale error timeout http_500 http_502 http_503 http_504;
+                proxy_cache_valid 200 60m;
+                add_header X-Proxy-Cache $upstream_cache_status;
+            }
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: local-cdn
+  labels:
+    app: local-cdn
+spec:
+  selector:
+    matchLabels:
+      app: local-cdn
+  template:
+    metadata:
+      labels:
+        app: local-cdn
+    spec:
+      containers:
+      - name: local-cdn
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+        - name: cache-volume
+          mountPath: /var/cache/nginx
+      volumes:
+      - name: config-volume
+        configMap:
+          name: local-cdn-config
+      - name: cache-volume
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: local-cdn
+  labels:
+    app: local-cdn
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: local-cdn

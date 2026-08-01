@@ -56,6 +56,16 @@
           </div>
           {{ end }}
 
+          <div class="col-12 mt-4 mb-4 text-center">
+            {{ if $.has_prev_page }}
+              <a href="{{ $.baseUrl }}/?page={{ $.prev_page }}" class="btn btn-primary mr-2">&laquo; Previous</a>
+            {{ end }}
+            <span class="mx-3 align-middle font-weight-bold">Page {{ $.page }}</span>
+            {{ if $.has_next_page }}
+              <a href="{{ $.baseUrl }}/?page={{ $.next_page }}" class="btn btn-primary ml-2">Next &raquo;</a>
+            {{ end }}
+          </div>
+
         </div>
 
         <!-- Footer for larger screens. -->

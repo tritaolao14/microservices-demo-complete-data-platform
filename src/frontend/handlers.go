@@ -31,6 +31,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	"google.golang.org/grpc/metadata"
 
 	pb "github.com/GoogleCloudPlatform/microservices-demo/src/frontend/genproto"
 	"github.com/GoogleCloudPlatform/microservices-demo/src/frontend/money"
@@ -64,11 +65,28 @@ func (fe *frontendServer) homeHandler(w http.ResponseWriter, r *http.Request) {
 		renderHTTPError(log, r, w, errors.Wrap(err, "could not retrieve currencies"), http.StatusInternalServerError)
 		return
 	}
-	products, err := fe.getProducts(r.Context())
+	pageStr := r.URL.Query().Get("page")
+	page := 1
+	if pageStr != "" {
+		if parsed, err := strconv.Atoi(pageStr); err == nil && parsed > 0 {
+			page = parsed
+		}
+	}
+	md := metadata.Pairs("page", strconv.Itoa(page))
+	ctx := metadata.NewOutgoingContext(r.Context(), md)
+
+	products, err := fe.getProducts(ctx)
 	if err != nil {
 		renderHTTPError(log, r, w, errors.Wrap(err, "could not retrieve products"), http.StatusInternalServerError)
 		return
 	}
+
+	hasNextPage := false
+	if len(products) > 20 {
+		hasNextPage = true
+		products = products[:20]
+	}
+	hasPrevPage := page > 1
 	cart, err := fe.getCart(r.Context(), sessionID(r))
 	if err != nil {
 		renderHTTPError(log, r, w, errors.Wrap(err, "could not retrieve cart"), http.StatusInternalServerError)
@@ -114,6 +132,11 @@ func (fe *frontendServer) homeHandler(w http.ResponseWriter, r *http.Request) {
 		"cart_size":     cartSize(cart),
 		"banner_color":  os.Getenv("BANNER_COLOR"), // illustrates canary deployments
 		"ad":            fe.chooseAd(r.Context(), []string{}, log),
+		"page":          page,
+		"next_page":     page + 1,
+		"prev_page":     page - 1,
+		"has_next_page": hasNextPage,
+		"has_prev_page": hasPrevPage,
 	})); err != nil {
 		log.Error(err)
 	}

@@ -18,18 +18,27 @@ import random
 from locust import FastHttpUser, TaskSet, between
 from faker import Faker
 import datetime
+import pg8000.native
+import os
+
 fake = Faker()
 
-products = [
-    '0PUK6V6EV0',
-    '1YMWWN1N4O',
-    '2ZYFJ3GM2N',
-    '66VCHSJNUP',
-    '6E92ZMYYFZ',
-    '9SIQT8TOJO',
-    'L9ECAV7KIM',
-    'LS4PSXUNUM',
-    'OLJCESPC7Z']
+products = ['0PUK6V6EV0'] # Fallback
+try:
+    conn = pg8000.native.Connection(
+        host=os.environ.get("POSTGRES_HOST", "postgres"),
+        port=5432,
+        user=os.environ.get("POSTGRES_USER", "boutique"),
+        password=os.environ.get("POSTGRES_PASSWORD", "boutique_pass"),
+        database=os.environ.get("POSTGRES_DB", "product_catalog")
+    )
+    rows = conn.run("SELECT id FROM products")
+    fetched_products = [row[0] for row in rows]
+    if fetched_products:
+        products = fetched_products
+    conn.close()
+except Exception as e:
+    print(f"Failed to fetch products from DB: {e}")
 
 def index(l):
     l.client.get("/")

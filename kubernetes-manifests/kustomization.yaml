@@ -26,6 +26,11 @@ resources:
  - productcatalogservice.yaml
  - recommendationservice.yaml
  - shippingservice.yaml
+ - kafka.yaml
+ - postgresql.yaml
+ - minio.yaml
+ - local-cdn.yaml
+ - spark-iceberg-config.yaml
 # components:
 # - ../kustomize/components/cymbal-branding
 # - ../kustomize/components/google-cloud-operations
