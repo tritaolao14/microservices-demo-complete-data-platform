@@ -189,4 +189,3 @@ jobs:
         with:
           sarif_file: trivy-config.sarif
           category: trivy-config
-          sarif_file: trivy-config.sarif
