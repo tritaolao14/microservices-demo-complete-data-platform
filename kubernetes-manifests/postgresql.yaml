@@ -89,3 +89,33 @@ data:
         category_id INT REFERENCES categories(id),
         PRIMARY KEY (product_id, category_id)
     );
+    INSERT INTO products (id, name, description, picture_url, price_units, price_nanos, currency_code) VALUES ('OLJCESPC7Z', 'Sunglasses', 'Add a modern touch to your outfits with these sleek aviator sunglasses.', '/static/img/products/sunglasses.jpg', 19, 990000000, 'USD');
+    INSERT INTO products (id, name, description, picture_url, price_units, price_nanos, currency_code) VALUES ('66VCHSJNUP', 'Tank Top', 'Perfectly cropped cotton tank, with a scooped neckline.', '/static/img/products/tank-top.jpg', 18, 990000000, 'USD');
+    INSERT INTO products (id, name, description, picture_url, price_units, price_nanos, currency_code) VALUES ('1YMWWN1N4O', 'Watch', 'This gold-tone stainless steel watch will work with most of your outfits.', '/static/img/products/watch.jpg', 109, 990000000, 'USD');
+    INSERT INTO products (id, name, description, picture_url, price_units, price_nanos, currency_code) VALUES ('L9ECAV7KIM', 'Loafers', 'A neat addition to your summer wardrobe.', '/static/img/products/loafers.jpg', 89, 990000000, 'USD');
+    INSERT INTO products (id, name, description, picture_url, price_units, price_nanos, currency_code) VALUES ('2ZYFJ3GM2N', 'Hairdryer', 'This lightweight hairdryer has 3 heat and speed settings. It''s perfect for travel.', '/static/img/products/hairdryer.jpg', 24, 990000000, 'USD');
+    INSERT INTO products (id, name, description, picture_url, price_units, price_nanos, currency_code) VALUES ('0PUK6V6EV0', 'Candle Holder', 'This small but intricate candle holder is an excellent gift.', '/static/img/products/candle-holder.jpg', 18, 990000000, 'USD');
+    INSERT INTO products (id, name, description, picture_url, price_units, price_nanos, currency_code) VALUES ('LS4PSXUNUM', 'Salt & Pepper Shakers', 'Add some flavor to your kitchen.', '/static/img/products/salt-and-pepper-shakers.jpg', 18, 490000000, 'USD');
+    INSERT INTO products (id, name, description, picture_url, price_units, price_nanos, currency_code) VALUES ('9SIQT8TOJO', 'Bamboo Glass Jar', 'This bamboo glass jar can hold 57 oz (1.7 l) and is perfect for any kitchen.', '/static/img/products/bamboo-glass-jar.jpg', 5, 490000000, 'USD');
+    INSERT INTO products (id, name, description, picture_url, price_units, price_nanos, currency_code) VALUES ('6E92ZMYYFZ', 'Mug', 'A simple mug with a mustard interior.', '/static/img/products/mug.jpg', 8, 990000000, 'USD');
+    INSERT INTO categories (id, name) VALUES (1, 'accessories') ON CONFLICT (name) DO UPDATE SET id = EXCLUDED.id;
+    INSERT INTO categories (id, name) VALUES (2, 'beauty') ON CONFLICT (name) DO UPDATE SET id = EXCLUDED.id;
+    INSERT INTO categories (id, name) VALUES (3, 'clothing') ON CONFLICT (name) DO UPDATE SET id = EXCLUDED.id;
+    INSERT INTO categories (id, name) VALUES (4, 'decor') ON CONFLICT (name) DO UPDATE SET id = EXCLUDED.id;
+    INSERT INTO categories (id, name) VALUES (5, 'footwear') ON CONFLICT (name) DO UPDATE SET id = EXCLUDED.id;
+    INSERT INTO categories (id, name) VALUES (6, 'hair') ON CONFLICT (name) DO UPDATE SET id = EXCLUDED.id;
+    INSERT INTO categories (id, name) VALUES (7, 'home') ON CONFLICT (name) DO UPDATE SET id = EXCLUDED.id;
+    INSERT INTO categories (id, name) VALUES (8, 'kitchen') ON CONFLICT (name) DO UPDATE SET id = EXCLUDED.id;
+    INSERT INTO categories (id, name) VALUES (9, 'tops') ON CONFLICT (name) DO UPDATE SET id = EXCLUDED.id;
+    INSERT INTO product_categories (product_id, category_id) SELECT 'OLJCESPC7Z', id FROM categories WHERE name = 'accessories' ON CONFLICT DO NOTHING;
+    INSERT INTO product_categories (product_id, category_id) SELECT '66VCHSJNUP', id FROM categories WHERE name = 'clothing' ON CONFLICT DO NOTHING;
+    INSERT INTO product_categories (product_id, category_id) SELECT '66VCHSJNUP', id FROM categories WHERE name = 'tops' ON CONFLICT DO NOTHING;
+    INSERT INTO product_categories (product_id, category_id) SELECT '1YMWWN1N4O', id FROM categories WHERE name = 'accessories' ON CONFLICT DO NOTHING;
+    INSERT INTO product_categories (product_id, category_id) SELECT 'L9ECAV7KIM', id FROM categories WHERE name = 'footwear' ON CONFLICT DO NOTHING;
+    INSERT INTO product_categories (product_id, category_id) SELECT '2ZYFJ3GM2N', id FROM categories WHERE name = 'hair' ON CONFLICT DO NOTHING;
+    INSERT INTO product_categories (product_id, category_id) SELECT '2ZYFJ3GM2N', id FROM categories WHERE name = 'beauty' ON CONFLICT DO NOTHING;
+    INSERT INTO product_categories (product_id, category_id) SELECT '0PUK6V6EV0', id FROM categories WHERE name = 'decor' ON CONFLICT DO NOTHING;
+    INSERT INTO product_categories (product_id, category_id) SELECT '0PUK6V6EV0', id FROM categories WHERE name = 'home' ON CONFLICT DO NOTHING;
+    INSERT INTO product_categories (product_id, category_id) SELECT 'LS4PSXUNUM', id FROM categories WHERE name = 'kitchen' ON CONFLICT DO NOTHING;
+    INSERT INTO product_categories (product_id, category_id) SELECT '9SIQT8TOJO', id FROM categories WHERE name = 'kitchen' ON CONFLICT DO NOTHING;
+    INSERT INTO product_categories (product_id, category_id) SELECT '6E92ZMYYFZ', id FROM categories WHERE name = 'kitchen' ON CONFLICT DO NOTHING;

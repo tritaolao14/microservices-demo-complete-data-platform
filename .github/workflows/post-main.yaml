@@ -31,6 +31,7 @@ on:
       - release/*
     paths-ignore:
       - 'gitops/**'
+  workflow_dispatch: {}
 
 concurrency:
   group: post-main-${{ github.workflow }}-${{ github.ref }}
@@ -49,10 +50,10 @@ jobs:
           DOTNET_INSTALL_DIR: "./.dotnet"
         with:
           dotnet-version: '10.0'
-      - uses: actions/setup-java@v6
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -70,7 +71,7 @@ jobs:
         run: dotnet test src/cartservice/
       - name: Java unit tests
         run: |
-          cd src/adservice && ./gradlew --no-daemon test
+          cd src/adservice && chmod +x gradlew && ./gradlew --no-daemon test
       - name: Python syntax check
         run: |
           for d in src/emailservice src/recommendationservice src/loadgenerator src/data_processing; do
@@ -84,12 +85,14 @@ jobs:
 
   security-scan:
     runs-on: ubuntu-24.04
+    permissions:
+      security-events: write
     steps:
       - uses: actions/checkout@v6
       # Report-only for now: the legacy codebase has a pre-existing scan
       # baseline. Blocking enforcement can be enabled after it is addressed.
       - name: Trivy filesystem scan (report-only)
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -103,8 +106,9 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-fs.sarif
+          category: trivy-fs
       - name: Trivy config scan (K8s manifests, report-only)
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: config
           scan-ref: kubernetes-manifests
@@ -117,6 +121,7 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-config.sarif
+          category: trivy-config
 
   build-and-validate:
     runs-on: ubuntu-24.04
@@ -131,26 +136,42 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - name: Install kind
         run: |
-          curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
-          chmod +x /usr/local/bin/kind
+          mkdir -p "$HOME/bin"
+          curl -Lo "$HOME/bin/kind" https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x "$HOME/bin/kind"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
       - name: Install skaffold
         run: |
-          curl -Lo /usr/local/bin/skaffold https://storage.googleapis.com/skaffold/releases/latest/skaffold-linux-amd64
-          chmod +x /usr/local/bin/skaffold
+          mkdir -p "$HOME/bin"
+          curl -Lo "$HOME/bin/skaffold" https://storage.googleapis.com/skaffold/releases/v2.23.0/skaffold-linux-amd64
+          chmod +x "$HOME/bin/skaffold"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
-      - name: Start local registry
+      - name: Build images (single platform, into local daemon)
         run: |
-          docker run -d -p 5000:5000 --name registry registry:2
-      - name: Build & push images to local registry
-        run: |
-          skaffold build --push --default-repo=127.0.0.1:5000 --tag=$GITHUB_SHA
+          skaffold build \
+            --platform=linux/amd64 \
+            --file-output=tags.json \
+            --default-repo=127.0.0.1:5000 \
+            --tag=$GITHUB_SHA
       - name: Create kind cluster
         run: kind create cluster
       - name: Deploy to kind (CI validation)
         run: |
-          skaffold run --push=false --cache-artifacts \
-            --kube-context kind-kind --default-repo=127.0.0.1:5000 --tag=$GITHUB_SHA
+          skaffold deploy \
+            --build-artifacts=tags.json \
+            --load-images=true \
+            --kube-context kind-kind \
+            --default-repo=127.0.0.1:5000 --tag=$GITHUB_SHA
+      - name: Deploy loadgenerator to kind
+        run: |
+          skaffold deploy \
+            --module=loadgenerator \
+            --build-artifacts=tags.json \
+            --load-images=true \
+            --kube-context kind-kind \
+            --default-repo=127.0.0.1:5000 --tag=$GITHUB_SHA
       - name: Wait for pods
         timeout-minutes: 25
         run: |
@@ -168,6 +189,12 @@ jobs:
           kubectl wait --for=condition=available --timeout=1200s deployment/productcatalogservice
           kubectl wait --for=condition=available --timeout=1200s deployment/recommendationservice
           kubectl wait --for=condition=available --timeout=1200s deployment/shippingservice
+      - name: Create Kafka topic "orders"
+        timeout-minutes: 10
+        run: |
+          kubectl exec deploy/kafka -- \
+            /usr/bin/kafka-topics --bootstrap-server localhost:9092 --create \
+            --topic orders --partitions 1 --replication-factor 1 --if-not-exists
       - name: Smoke test (loadgenerator)
         timeout-minutes: 10
         run: |

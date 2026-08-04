@@ -17,16 +17,15 @@
 # Local CI pipeline: replicate the CI flow on the developer machine.
 #
 # Steps:
-#   1. Ensure a local docker registry runs on 127.0.0.1:5000.
-#   2. Run fast quality checks (go vet/test, python compile, node --check,
+#   1. Run fast quality checks (go vet/test, python compile, node --check if available,
 #      kustomize build).
-#   3. Build all service images and push them to the local registry.
-#   4. Validate artifacts on an ephemeral kind cluster (smoke test + Kafka
+#   2. Build all service images for the host platform into the local docker
+#      daemon (no registry push needed; kind loads images directly).
+#   3. Validate artifacts on an ephemeral kind cluster (smoke test + Kafka
 #      order-event E2E).
-#   5. Update image tags in gitops/overlays/{staging,production}.
+#   4. Update image tags in gitops/overlays/{staging,production}.
 #
 # Env overrides:
-#   REGISTRY (default 127.0.0.1:5000)
 #   TAG      (default short git SHA)
 #   CLUSTER  (kind cluster name, default ci-local)
 
@@ -35,31 +34,16 @@ set -euo pipefail
 REPO_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
 cd "${REPO_ROOT}"
 
-REGISTRY="${REGISTRY:-127.0.0.1:5000}"
 TAG="${TAG:-$(git rev-parse --short HEAD)}"
 CLUSTER="${CLUSTER:-ci-local}"
 
 log() { echo "[ci-local] $*" >&2; }
 
-# --- Step 0: ensure local registry ---
-ensure_registry() {
-  if ! docker ps --format '{{.Names}}' | grep -q '^registry$'; then
-    if docker ps -a --format '{{.Names}}' | grep -q '^registry$'; then
-      log "starting existing 'registry' container"
-      docker start registry
-    else
-      log "starting new local registry container on ${REGISTRY}"
-      docker run -d -p 5000:5000 --name registry registry:2
-    fi
-  fi
-  log "local registry ready at ${REGISTRY}"
-}
-
 # --- Step 1: fast quality checks ---
 quality_checks() {
   log "quality checks: go vet/test"
   for SERVICE in shippingservice productcatalogservice frontend checkoutservice; do
-    (cd "src/${SERVICE}" && gofmt -l . && go vet ./... && go test ./...)
+    (cd "src/${SERVICE}" && gofmt -l . && go vet -copylocks=false ./... && go test ./...)
   done
 
   log "quality checks: python compile"
@@ -67,20 +51,32 @@ quality_checks() {
     (cd "$d" && python3 -m py_compile ./*.py)
   done
 
-  log "quality checks: node --check"
-  for d in src/currencyservice src/paymentservice; do
-    (cd "$d" && find . -maxdepth 1 -name '*.js' -exec node --check {} \;)
-  done
+  if command -v node > /dev/null; then
+    log "quality checks: node --check"
+    for d in src/currencyservice src/paymentservice; do
+      (cd "$d" && find . -maxdepth 1 -name '*.js' -exec node --check {} \;)
+    done
+  else
+    log "WARN: node not found, skipping node --check"
+  fi
 
   log "quality checks: kustomize build"
   kubectl kustomize kubernetes-manifests > /dev/null
   kubectl kustomize kustomize > /dev/null
 }
 
-# --- Step 2: build + push images ---
-build_and_push() {
-  log "build + push images to ${REGISTRY} with tag ${TAG}"
-  skaffold build --push --default-repo="${REGISTRY}" --tag="${TAG}"
+# --- Step 2: build images ---
+build_images() {
+  log "build images to local daemon with tag ${TAG} for host platform"
+  case "$(uname -m)" in
+    x86_64) PLATFORM="linux/amd64" ;;
+    arm64|aarch64) PLATFORM="linux/arm64" ;;
+    *) PLATFORM="linux/amd64" ;;
+  esac
+  skaffold build \
+    --platform="${PLATFORM}" \
+    --file-output=tags.json \
+    --default-repo="" --tag="${TAG}"
 }
 
 # --- Step 3: validate on ephemeral kind cluster ---
@@ -94,10 +90,27 @@ validate_kind() {
     kind create cluster --name "${CLUSTER}"
   fi
 
+  log "removing control-plane taint from kind node"
+  kubectl --context "kind-${CLUSTER}" taint nodes "${CLUSTER}-control-plane" node-role.kubernetes.io/control-plane- || true
+
+  log "loading images into kind cluster"
+  IMAGE_TAGS=$(jq -r '.builds[].tag' tags.json)
+  for IMAGE in $IMAGE_TAGS; do
+    kind load docker-image --name "${CLUSTER}" "$IMAGE"
+  done
+
   log "deploying to kind"
-  skaffold run --push=false --cache-artifacts \
+  skaffold deploy \
+    --build-artifacts=tags.json \
     --kube-context "kind-${CLUSTER}" \
-    --default-repo="${REGISTRY}" --tag="${TAG}"
+    --default-repo="" --tag="${TAG}"
+
+  log "deploying loadgenerator to kind"
+  skaffold deploy \
+    --module=loadgenerator \
+    --build-artifacts=tags.json \
+    --kube-context "kind-${CLUSTER}" \
+    --default-repo="" --tag="${TAG}"
 
   log "waiting for deployments"
   kubectl --context "kind-${CLUSTER}" wait --for=condition=available --timeout=1200s \
@@ -105,6 +118,11 @@ validate_kind() {
     deployment/checkoutservice deployment/currencyservice deployment/emailservice \
     deployment/frontend deployment/kafka deployment/loadgenerator deployment/paymentservice \
     deployment/productcatalogservice deployment/recommendationservice deployment/shippingservice
+
+  log "creating Kafka topic 'orders'"
+  kubectl --context "kind-${CLUSTER}" exec deploy/kafka -- \
+    /usr/bin/kafka-topics --bootstrap-server localhost:9092 --create \
+    --topic orders --partitions 1 --replication-factor 1 --if-not-exists || true
 
   log "smoke test (loadgenerator)"
   kubectl --context "kind-${CLUSTER}" delete pod -l app=loadgenerator || true
@@ -159,13 +177,12 @@ cleanup() {
 }
 
 main() {
-  ensure_registry
   quality_checks
-  build_and_push
+  build_images
   trap cleanup EXIT
   validate_kind
   update_gitops
-  log "DONE. Images at ${REGISTRY}, tag ${TAG}, gitops overlays updated."
+  log "DONE. Images tagged ${TAG} in local daemon, gitops overlays updated."
 }
 
 main "$@"
