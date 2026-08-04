@@ -50,7 +50,7 @@ jobs:
           DOTNET_INSTALL_DIR: "./.dotnet"
         with:
           dotnet-version: '10.0'
-      - uses: actions/setup-java@v6
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -90,7 +90,7 @@ jobs:
       # Report-only for now: the legacy codebase has a pre-existing scan
       # baseline. Blocking enforcement can be enabled after it is addressed.
       - name: Trivy filesystem scan (report-only)
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -105,7 +105,7 @@ jobs:
         with:
           sarif_file: trivy-fs.sarif
       - name: Trivy config scan (K8s manifests, report-only)
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           scan-type: config
           scan-ref: kubernetes-manifests
