@@ -153,13 +153,18 @@ jobs:
           docker run -d -p 5000:5000 --name registry registry:2
       - name: Build & push images to local registry
         run: |
-          skaffold build --push --default-repo=127.0.0.1:5000 --tag=$GITHUB_SHA
+          skaffold build --push \
+            --file-output=tags.json \
+            --default-repo=127.0.0.1:5000 \
+            --tag=$GITHUB_SHA
       - name: Create kind cluster
         run: kind create cluster
       - name: Deploy to kind (CI validation)
         run: |
-          skaffold run --push=false --cache-artifacts \
-            --kube-context kind-kind --default-repo=127.0.0.1:5000 --tag=$GITHUB_SHA
+          skaffold deploy \
+            --build-artifacts=tags.json \
+            --kube-context kind-kind \
+            --default-repo=127.0.0.1:5000 --tag=$GITHUB_SHA
       - name: Wait for pods
         timeout-minutes: 25
         run: |
