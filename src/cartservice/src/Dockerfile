@@ -17,7 +17,7 @@ ARG BUILDPLATFORM=linux/amd64
 
 # https://mcr.microsoft.com/product/dotnet/sdk
 FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0.100-noble@sha256:c7445f141c04f1a6b454181bd098dcfa606c61ba0bd213d0a702489e5bd4cd71 AS builder
-ARG TARGETARCH=arm64
+ARG TARGETARCH
 
 RUN echo "BUILDPLATFORM=$BUILDPLATFORM"
 RUN echo "TARGETARCH=$TARGETARCH"
@@ -25,16 +25,22 @@ RUN uname -m
 
 WORKDIR /app
 COPY cartservice.csproj .
-RUN dotnet restore cartservice.csproj -a $TARGETARCH
 COPY . .
-RUN dotnet publish cartservice.csproj \
-    -p:PublishSingleFile=true \
-    -a $TARGETARCH \
-    --self-contained true \
-    -p:PublishTrimmed=true \
-    -p:TrimMode=full \
-    -c release \
-    -o /cartservice
+# .NET SDK --arch accepts x64/arm64, not buildkit's amd64/aarch64 values.
+RUN case "${TARGETARCH:-$(uname -m)}" in \
+      amd64|x86_64) DOTNET_ARCH=x64 ;; \
+      arm64|aarch64) DOTNET_ARCH=arm64 ;; \
+      *) DOTNET_ARCH="${TARGETARCH:-$(uname -m)}" ;; \
+    esac && \
+    dotnet restore cartservice.csproj -a "$DOTNET_ARCH" && \
+    dotnet publish cartservice.csproj \
+      -p:PublishSingleFile=true \
+      -a "$DOTNET_ARCH" \
+      --self-contained true \
+      -p:PublishTrimmed=true \
+      -p:TrimMode=full \
+      -c release \
+      -o /cartservice
 
 # https://mcr.microsoft.com/product/dotnet/runtime-deps
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0.0-noble-chiseled@sha256:b857c8cb8d929183cfe4c6dd9994abba92a2639dd2dbaf06005379f815991604
