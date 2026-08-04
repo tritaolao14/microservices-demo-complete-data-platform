@@ -71,7 +71,7 @@ jobs:
         run: dotnet test src/cartservice/
       - name: Java unit tests
         run: |
-          cd src/adservice && ./gradlew --no-daemon test
+          cd src/adservice && chmod +x gradlew && ./gradlew --no-daemon test
       - name: Python syntax check
         run: |
           for d in src/emailservice src/recommendationservice src/loadgenerator src/data_processing; do
