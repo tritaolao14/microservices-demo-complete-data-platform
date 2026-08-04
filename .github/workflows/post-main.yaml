@@ -164,6 +164,14 @@ jobs:
             --load-images=true \
             --kube-context kind-kind \
             --default-repo=127.0.0.1:5000 --tag=$GITHUB_SHA
+      - name: Deploy loadgenerator to kind
+        run: |
+          skaffold deploy \
+            --module=loadgenerator \
+            --build-artifacts=tags.json \
+            --load-images=true \
+            --kube-context kind-kind \
+            --default-repo=127.0.0.1:5000 --tag=$GITHUB_SHA
       - name: Wait for pods
         timeout-minutes: 25
         run: |
