@@ -5,19 +5,26 @@ import (
 	"strings"
 	"time"
 
+	"fmt"
 	pb "github.com/GoogleCloudPlatform/microservices-demo/src/productcatalogservice/genproto"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
 	"google.golang.org/grpc/codes"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"fmt"
 	"strconv"
 )
 
+// productsDB is the subset of *pgxpool.Pool used by the catalog queries. It is
+// an interface so the catalog can be unit-tested with a mock database.
+type productsDB interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 type productCatalog struct {
 	pb.UnimplementedProductCatalogServiceServer
-	db *pgxpool.Pool
+	db productsDB
 }
 
 func (p *productCatalog) Check(ctx context.Context, req *healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error) {
@@ -51,7 +58,7 @@ func (p *productCatalog) ListProducts(ctx context.Context, _ *pb.Empty) (*pb.Lis
 		GROUP BY p.id, p.name, p.description, p.picture_url, p.price_units, p.price_nanos, p.currency_code
 		ORDER BY p.id
 		LIMIT %d OFFSET %d
-	`, pageSize + 1, offset)
+	`, pageSize+1, offset)
 
 	rows, err := p.db.Query(ctx, query)
 	if err != nil {
@@ -64,7 +71,7 @@ func (p *productCatalog) ListProducts(ctx context.Context, _ *pb.Empty) (*pb.Lis
 	for rows.Next() {
 		prod := &pb.Product{PriceUsd: &pb.Money{}}
 		var catsStr string
-		err := rows.Scan(&prod.Id, &prod.Name, &prod.Description, &prod.Picture, 
+		err := rows.Scan(&prod.Id, &prod.Name, &prod.Description, &prod.Picture,
 			&prod.PriceUsd.Units, &prod.PriceUsd.Nanos, &prod.PriceUsd.CurrencyCode, &catsStr)
 		if err != nil {
 			log.Errorf("failed to scan product: %v", err)
@@ -94,7 +101,7 @@ func (p *productCatalog) GetProduct(ctx context.Context, req *pb.GetProductReque
 	row := p.db.QueryRow(ctx, query, req.Id)
 	prod := &pb.Product{PriceUsd: &pb.Money{}}
 	var catsStr string
-	err := row.Scan(&prod.Id, &prod.Name, &prod.Description, &prod.Picture, 
+	err := row.Scan(&prod.Id, &prod.Name, &prod.Description, &prod.Picture,
 		&prod.PriceUsd.Units, &prod.PriceUsd.Nanos, &prod.PriceUsd.CurrencyCode, &catsStr)
 	if err != nil {
 		log.Errorf("product not found or error: %v", err)
@@ -131,7 +138,7 @@ func (p *productCatalog) SearchProducts(ctx context.Context, req *pb.SearchProdu
 	for rows.Next() {
 		prod := &pb.Product{PriceUsd: &pb.Money{}}
 		var catsStr string
-		err := rows.Scan(&prod.Id, &prod.Name, &prod.Description, &prod.Picture, 
+		err := rows.Scan(&prod.Id, &prod.Name, &prod.Description, &prod.Picture,
 			&prod.PriceUsd.Units, &prod.PriceUsd.Nanos, &prod.PriceUsd.CurrencyCode, &catsStr)
 		if err != nil {
 			log.Errorf("failed to scan product: %v", err)
