@@ -22,6 +22,7 @@ on:
   pull_request:
     branches:
       - main
+      - Anh200726
 
 concurrency:
   group: pre-pr-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
