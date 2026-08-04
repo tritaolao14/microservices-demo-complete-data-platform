@@ -183,6 +183,12 @@ jobs:
           kubectl wait --for=condition=available --timeout=1200s deployment/productcatalogservice
           kubectl wait --for=condition=available --timeout=1200s deployment/recommendationservice
           kubectl wait --for=condition=available --timeout=1200s deployment/shippingservice
+      - name: Create Kafka topic "orders"
+        timeout-minutes: 10
+        run: |
+          kubectl exec deploy/kafka -- \
+            /usr/bin/kafka-topics --bootstrap-server localhost:9092 --create \
+            --topic orders --partitions 1 --replication-factor 1 --if-not-exists
       - name: Smoke test (loadgenerator)
         timeout-minutes: 10
         run: |
