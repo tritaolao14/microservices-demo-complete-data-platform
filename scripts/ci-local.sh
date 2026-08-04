@@ -93,15 +93,10 @@ validate_kind() {
   log "removing control-plane taint from kind node"
   kubectl --context "kind-${CLUSTER}" taint nodes "${CLUSTER}-control-plane" node-role.kubernetes.io/control-plane- || true
 
-  log "loading images into kind cluster"
-  IMAGE_TAGS=$(jq -r '.builds[].tag' tags.json)
-  for IMAGE in $IMAGE_TAGS; do
-    kind load docker-image --name "${CLUSTER}" "$IMAGE"
-  done
-
-  log "deploying to kind"
+  log "deploying to kind (skaffold --load-images loads the built images)"
   skaffold deploy \
     --build-artifacts=tags.json \
+    --load-images=true \
     --kube-context "kind-${CLUSTER}" \
     --default-repo="" --tag="${TAG}"
 
@@ -109,6 +104,7 @@ validate_kind() {
   skaffold deploy \
     --module=loadgenerator \
     --build-artifacts=tags.json \
+    --load-images=true \
     --kube-context "kind-${CLUSTER}" \
     --default-repo="" --tag="${TAG}"
 
@@ -119,28 +115,41 @@ validate_kind() {
     deployment/frontend deployment/kafka deployment/loadgenerator deployment/paymentservice \
     deployment/productcatalogservice deployment/recommendationservice deployment/shippingservice
 
-  log "creating Kafka topic 'orders'"
-  kubectl --context "kind-${CLUSTER}" exec deploy/kafka -- \
-    /usr/bin/kafka-topics --bootstrap-server localhost:9092 --create \
-    --topic orders --partitions 1 --replication-factor 1 --if-not-exists || true
+  log "creating Kafka topic 'orders' (retry until broker is ready)"
+  TOPIC_OK=""
+  for i in $(seq 1 12); do
+    if kubectl --context "kind-${CLUSTER}" exec deploy/kafka -- \
+      /usr/bin/kafka-topics --bootstrap-server localhost:9092 --create \
+      --topic orders --partitions 1 --replication-factor 1 --if-not-exists >/dev/null 2>&1 && \
+      kubectl --context "kind-${CLUSTER}" exec deploy/kafka -- \
+        /usr/bin/kafka-topics --bootstrap-server localhost:9092 --list | grep -q '^orders$'; then
+      TOPIC_OK="1"
+      break
+    fi
+    log "  kafka not ready yet (attempt ${i}/12), retrying..."
+    sleep 5
+  done
+  if [[ -z "${TOPIC_OK}" ]]; then
+    log "ERROR: failed to create Kafka topic 'orders'"
+    return 1
+  fi
 
   log "smoke test (loadgenerator)"
+  log "waiting for services to warm up before resetting loadgenerator"
+  sleep 30
   kubectl --context "kind-${CLUSTER}" delete pod -l app=loadgenerator || true
+  sleep 10
   REQUEST_COUNT="0"
   while [[ "$REQUEST_COUNT" -lt "50" ]]; do
     sleep 5
-    REQUEST_COUNT=$(kubectl --context "kind-${CLUSTER}" logs -l app=loadgenerator | grep Aggregated | awk '{print $2}')
+    REQUEST_COUNT=$(kubectl --context "kind-${CLUSTER}" logs -l app=loadgenerator | grep Aggregated | awk '{print $2}' | tail -1)
   done
-  ERROR_COUNT=$(kubectl --context "kind-${CLUSTER}" logs -l app=loadgenerator | grep Aggregated | awk '{print $3}' | sed "s/[(][^)]*[)]//g")
+  ERROR_COUNT=$(kubectl --context "kind-${CLUSTER}" logs -l app=loadgenerator | grep Aggregated | awk '{print $3}' | tail -1 | sed "s/[(][^)]*[)]//g")
   log "loadgenerator aggregated requests=$REQUEST_COUNT errors=$ERROR_COUNT"
   if [[ "${ERROR_COUNT}" -gt "0" ]]; then
     log "ERROR: loadgenerator reported errors"
     return 1
   fi
-
-  log "E2E: verify Kafka topic 'orders'"
-  kubectl --context "kind-${CLUSTER}" exec deploy/kafka -- \
-    /usr/bin/kafka-topics --bootstrap-server localhost:9092 --list | grep -q '^orders$'
 
   log "E2E: consume an order event"
   MSG=$(kubectl --context "kind-${CLUSTER}" exec deploy/kafka -- \
@@ -179,7 +188,6 @@ cleanup() {
 main() {
   quality_checks
   build_images
-  trap cleanup EXIT
   validate_kind
   update_gitops
   log "DONE. Images tagged ${TAG} in local daemon, gitops overlays updated."
