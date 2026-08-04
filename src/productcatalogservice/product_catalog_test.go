@@ -16,70 +16,78 @@ package main
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	pb "github.com/GoogleCloudPlatform/microservices-demo/src/productcatalogservice/genproto"
+	"github.com/jackc/pgx/v5"
+	"github.com/pashagolub/pgxmock/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-var (
-	mockProductCatalog *productCatalog
-)
-
-func TestMain(m *testing.M) {
-	mockProductCatalog = &productCatalog{
-		catalog: pb.ListProductsResponse{
-			Products: []*pb.Product{},
-		},
-	}
-
-	mockProductCatalog.catalog.Products = append(mockProductCatalog.catalog.Products, &pb.Product{
-		Id:   "abc001",
-		Name: "Product Alpha One",
-	})
-	mockProductCatalog.catalog.Products = append(mockProductCatalog.catalog.Products, &pb.Product{
-		Id:   "abc002",
-		Name: "Product Delta",
-	})
-	mockProductCatalog.catalog.Products = append(mockProductCatalog.catalog.Products, &pb.Product{
-		Id:   "abc003",
-		Name: "Product Alpha Two",
-	})
-	mockProductCatalog.catalog.Products = append(mockProductCatalog.catalog.Products, &pb.Product{
-		Id:   "abc004",
-		Name: "Product Gamma",
-	})
-
-	os.Exit(m.Run())
+func productColumns() []string {
+	return []string{"id", "name", "description", "picture_url", "price_units", "price_nanos", "currency_code", "categories"}
 }
 
 func TestGetProductExists(t *testing.T) {
-	product, err := mockProductCatalog.GetProduct(context.Background(),
-		&pb.GetProductRequest{Id: "abc003"},
-	)
+	pool, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	pool.ExpectQuery(`SELECT p.id, p.name`).
+		WithArgs("abc003").
+		WillReturnRows(pgxmock.NewRows(productColumns()).
+			AddRow("abc003", "Product Alpha Two", "desc", "pic", int64(1), int32(500000000), "USD", "clothing,accessories"))
+
+	catalog := &productCatalog{db: pool}
+	product, err := catalog.GetProduct(context.Background(), &pb.GetProductRequest{Id: "abc003"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, want := product.Name, "Product Alpha Two"; got != want {
-		t.Errorf("got %s, want %s", got, want)
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if got, want := product.PriceUsd.CurrencyCode, "USD"; got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
 func TestGetProductNotFound(t *testing.T) {
-	_, err := mockProductCatalog.GetProduct(context.Background(),
-		&pb.GetProductRequest{Id: "abc005"},
-	)
+	pool, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	pool.ExpectQuery(`SELECT p.id, p.name`).
+		WithArgs("abc005").
+		WillReturnError(pgx.ErrNoRows)
+
+	catalog := &productCatalog{db: pool}
+	_, err = catalog.GetProduct(context.Background(), &pb.GetProductRequest{Id: "abc005"})
 	if got, want := status.Code(err), codes.NotFound; got != want {
 		t.Errorf("got %s, want %s", got, want)
 	}
 }
 
 func TestListProducts(t *testing.T) {
-	products, err := mockProductCatalog.ListProducts(context.Background(),
-		&pb.Empty{},
-	)
+	pool, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	pool.ExpectQuery(`SELECT p.id, p.name`).
+		WillReturnRows(pgxmock.NewRows(productColumns()).
+			AddRow("abc001", "Product Alpha One", "d", "p", int64(0), int32(0), "USD", "clothing").
+			AddRow("abc002", "Product Delta", "d", "p", int64(0), int32(0), "USD", "clothing").
+			AddRow("abc003", "Product Alpha Two", "d", "p", int64(0), int32(0), "USD", "clothing").
+			AddRow("abc004", "Product Gamma", "d", "p", int64(0), int32(0), "USD", "clothing"))
+
+	catalog := &productCatalog{db: pool}
+	products, err := catalog.ListProducts(context.Background(), &pb.Empty{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,13 +97,25 @@ func TestListProducts(t *testing.T) {
 }
 
 func TestSearchProducts(t *testing.T) {
-	products, err := mockProductCatalog.SearchProducts(context.Background(),
-		&pb.SearchProductsRequest{Query: "alpha"},
-	)
+	pool, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := len(products.Results), 2; got != want {
+	defer pool.Close()
+
+	pool.ExpectQuery(`SELECT p.id, p.name`).
+		WithArgs("%alpha%").
+		WillReturnRows(pgxmock.NewRows(productColumns()).
+			AddRow("abc001", "Product Alpha One", "d", "p", int64(0), int32(0), "USD", "clothing").
+			AddRow("abc003", "Product Alpha Two", "d", "p", int64(0), int32(0), "USD", "clothing"))
+
+	catalog := &productCatalog{db: pool}
+	resp, err := catalog.SearchProducts(context.Background(),
+		&pb.SearchProductsRequest{Query: "alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(resp.Results), 2; got != want {
 		t.Errorf("got %d, want %d", got, want)
 	}
 }
