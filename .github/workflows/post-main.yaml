@@ -136,12 +136,16 @@ jobs:
       - uses: docker/setup-buildx-action@v3
       - name: Install kind
         run: |
-          curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
-          chmod +x /usr/local/bin/kind
+          mkdir -p "$HOME/bin"
+          curl -Lo "$HOME/bin/kind" https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x "$HOME/bin/kind"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
       - name: Install skaffold
         run: |
-          curl -Lo /usr/local/bin/skaffold https://storage.googleapis.com/skaffold/releases/latest/skaffold-linux-amd64
-          chmod +x /usr/local/bin/skaffold
+          mkdir -p "$HOME/bin"
+          curl -Lo "$HOME/bin/skaffold" https://storage.googleapis.com/skaffold/releases/latest/skaffold-linux-amd64
+          chmod +x "$HOME/bin/skaffold"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
       - name: Start local registry
