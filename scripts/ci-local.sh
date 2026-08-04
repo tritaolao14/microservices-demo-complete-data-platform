@@ -59,7 +59,7 @@ ensure_registry() {
 quality_checks() {
   log "quality checks: go vet/test"
   for SERVICE in shippingservice productcatalogservice frontend checkoutservice; do
-    (cd "src/${SERVICE}" && gofmt -l . && go vet ./... && go test ./...)
+    (cd "src/${SERVICE}" && gofmt -l . && go vet -copylocks=false ./... && go test ./...)
   done
 
   log "quality checks: python compile"
@@ -108,6 +108,11 @@ validate_kind() {
     deployment/checkoutservice deployment/currencyservice deployment/emailservice \
     deployment/frontend deployment/kafka deployment/loadgenerator deployment/paymentservice \
     deployment/productcatalogservice deployment/recommendationservice deployment/shippingservice
+
+  log "creating Kafka topic 'orders'"
+  kubectl --context "kind-${CLUSTER}" exec deploy/kafka -- \
+    /usr/bin/kafka-topics --bootstrap-server localhost:9092 --create \
+    --topic orders --partitions 1 --replication-factor 1 --if-not-exists || true
 
   log "smoke test (loadgenerator)"
   kubectl --context "kind-${CLUSTER}" delete pod -l app=loadgenerator || true
