@@ -163,6 +163,7 @@ jobs:
         run: |
           skaffold deploy \
             --build-artifacts=tags.json \
+            --load-images=true \
             --kube-context kind-kind \
             --default-repo=127.0.0.1:5000 --tag=$GITHUB_SHA
       - name: Wait for pods
