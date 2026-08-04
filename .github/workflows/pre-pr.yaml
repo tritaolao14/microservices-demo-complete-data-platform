@@ -84,7 +84,7 @@ jobs:
       - name: Install + syntax-check ${{ matrix.service }}
         run: |
           cd src/${{ matrix.service }}
-          npm ci
+          npm ci --ignore-scripts
           find . -maxdepth 1 -name '*.js' -exec node --check {} \;
 
   python-services:
@@ -127,6 +127,7 @@ jobs:
       - name: Test adservice
         run: |
           cd src/adservice
+          chmod +x ./gradlew
           ./gradlew --no-daemon test
 
   manifests:
@@ -158,7 +159,7 @@ jobs:
       # Findings surface in the Actions UI; blocking enforcement can be
       # enabled later after the baseline is addressed.
       - name: Trivy filesystem scan (report-only)
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -173,7 +174,7 @@ jobs:
         with:
           sarif_file: trivy-fs.sarif
       - name: Trivy config scan (K8s manifests, report-only)
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: config
           scan-ref: kubernetes-manifests
