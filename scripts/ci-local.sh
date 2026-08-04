@@ -80,7 +80,9 @@ quality_checks() {
 # --- Step 2: build + push images ---
 build_and_push() {
   log "build + push images to ${REGISTRY} with tag ${TAG}"
-  skaffold build --push --default-repo="${REGISTRY}" --tag="${TAG}"
+  skaffold build --push \
+    --file-output=tags.json \
+    --default-repo="${REGISTRY}" --tag="${TAG}"
 }
 
 # --- Step 3: validate on ephemeral kind cluster ---
@@ -95,7 +97,8 @@ validate_kind() {
   fi
 
   log "deploying to kind"
-  skaffold run --push=false --cache-artifacts \
+  skaffold deploy \
+    --build-artifacts=tags.json \
     --kube-context "kind-${CLUSTER}" \
     --default-repo="${REGISTRY}" --tag="${TAG}"
 
