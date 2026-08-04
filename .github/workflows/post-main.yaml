@@ -85,6 +85,8 @@ jobs:
 
   security-scan:
     runs-on: ubuntu-24.04
+    permissions:
+      security-events: write
     steps:
       - uses: actions/checkout@v6
       # Report-only for now: the legacy codebase has a pre-existing scan
