@@ -1,0 +1,239 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Post-merge CI (CI-only): full tests -> security scan -> build & publish
+# images to the local registry -> validate on an ephemeral kind cluster
+# (smoke test + Kafka order-event E2E) -> update GitOps overlay image tags.
+#
+# No environment deployment happens here; ArgoCD/CD is handled in a separate
+# ticket. See docs/ci-strategy.md.
+#
+# The workflow ignores pushes that only touch gitops/** so the auto-commit
+# produced by the update-gitops job does not re-trigger this pipeline.
+
+name: "Post-main - Tests, build & validate (CI)"
+
+on:
+  push:
+    branches:
+      - main
+      - release/*
+    paths-ignore:
+      - 'gitops/**'
+
+concurrency:
+  group: post-main-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+      - uses: actions/setup-dotnet@v5
+        env:
+          DOTNET_INSTALL_DIR: "./.dotnet"
+        with:
+          dotnet-version: '10.0'
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Go unit tests
+        run: |
+          set -e
+          for SERVICE in shippingservice productcatalogservice frontend checkoutservice; do
+            echo "== testing $SERVICE =="
+            pushd src/$SERVICE && go test ./... && popd
+          done
+      - name: C# unit tests
+        run: dotnet test src/cartservice/
+      - name: Java unit tests
+        run: |
+          cd src/adservice && ./gradlew --no-daemon test
+      - name: Python syntax check
+        run: |
+          for d in src/emailservice src/recommendationservice src/loadgenerator src/data_processing; do
+            (cd $d && python -m py_compile ./*.py)
+          done
+      - name: Node syntax check
+        run: |
+          for d in src/currencyservice src/paymentservice; do
+            (cd $d && find . -maxdepth 1 -name '*.js' -exec node --check {} \;)
+          done
+
+  security-scan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      # Report-only for now: the legacy codebase has a pre-existing scan
+      # baseline. Blocking enforcement can be enabled after it is addressed.
+      - name: Trivy filesystem scan (report-only)
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-fs.sarif
+          exit-code: '0'
+          ignore-unfixed: true
+      - name: Upload filesystem SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+      - name: Trivy config scan (K8s manifests, report-only)
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          scan-type: config
+          scan-ref: kubernetes-manifests
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-config.sarif
+          exit-code: '0'
+      - name: Upload config SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-config.sarif
+
+  build-and-validate:
+    runs-on: ubuntu-24.04
+    needs: tests
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Install kind
+        run: |
+          curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x /usr/local/bin/kind
+      - name: Install skaffold
+        run: |
+          curl -Lo /usr/local/bin/skaffold https://storage.googleapis.com/skaffold/releases/latest/skaffold-linux-amd64
+          chmod +x /usr/local/bin/skaffold
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+      - name: Start local registry
+        run: |
+          docker run -d -p 5000:5000 --name registry registry:2
+      - name: Build & push images to local registry
+        run: |
+          skaffold build --push --default-repo=127.0.0.1:5000 --tag=$GITHUB_SHA
+      - name: Create kind cluster
+        run: kind create cluster
+      - name: Deploy to kind (CI validation)
+        run: |
+          skaffold run --push=false --cache-artifacts \
+            --kube-context kind-kind --default-repo=127.0.0.1:5000 --tag=$GITHUB_SHA
+      - name: Wait for pods
+        timeout-minutes: 25
+        run: |
+          kubectl config use-context kind-kind
+          kubectl wait --for=condition=available --timeout=1200s deployment/redis-cart
+          kubectl wait --for=condition=available --timeout=1200s deployment/adservice
+          kubectl wait --for=condition=available --timeout=1200s deployment/cartservice
+          kubectl wait --for=condition=available --timeout=1200s deployment/checkoutservice
+          kubectl wait --for=condition=available --timeout=1200s deployment/currencyservice
+          kubectl wait --for=condition=available --timeout=1200s deployment/emailservice
+          kubectl wait --for=condition=available --timeout=1200s deployment/frontend
+          kubectl wait --for=condition=available --timeout=1200s deployment/kafka
+          kubectl wait --for=condition=available --timeout=1200s deployment/loadgenerator
+          kubectl wait --for=condition=available --timeout=1200s deployment/paymentservice
+          kubectl wait --for=condition=available --timeout=1200s deployment/productcatalogservice
+          kubectl wait --for=condition=available --timeout=1200s deployment/recommendationservice
+          kubectl wait --for=condition=available --timeout=1200s deployment/shippingservice
+      - name: Smoke test (loadgenerator)
+        timeout-minutes: 10
+        run: |
+          kubectl delete pod -l app=loadgenerator
+          REQUEST_COUNT="0"
+          while [[ "$REQUEST_COUNT" -lt "50" ]]; do
+            sleep 5
+            REQUEST_COUNT=$(kubectl logs -l app=loadgenerator | grep Aggregated | awk '{print $2}')
+          done
+          ERROR_COUNT=$(kubectl logs -l app=loadgenerator | grep Aggregated | awk '{print $3}' | sed "s/[(][^)]*[)]//g")
+          echo "loadgenerator aggregated requests=$REQUEST_COUNT errors=$ERROR_COUNT"
+          [[ "$ERROR_COUNT" -gt "0" ]] && exit 1 || true
+      - name: Verify Kafka topic "orders"
+        timeout-minutes: 10
+        run: |
+          kubectl exec deploy/kafka -- \
+            /usr/bin/kafka-topics --bootstrap-server localhost:9092 --list | grep -q "^orders$" && \
+            echo "TOPIC_OK: orders exists" || (echo "TOPIC_MISSING: orders" && exit 1)
+      - name: Consume an order event from topic "orders"
+        timeout-minutes: 15
+        run: |
+          MSG=$(kubectl exec deploy/kafka -- \
+            /usr/bin/kafka-console-consumer \
+            --bootstrap-server localhost:9092 --topic orders \
+            --max-messages 1 --timeout-ms 120000 2>/dev/null || true)
+          echo "message=$MSG"
+          cat <<'PYEOF' > /tmp/check.py
+          import sys, json
+          raw = sys.stdin.read()
+          assert raw.strip(), 'no order event received'
+          evt = json.loads(raw)
+          assert evt.get('order_id'), 'missing order_id'
+          assert evt.get('items'), 'missing items'
+          assert evt.get('timestamp'), 'missing timestamp'
+          print('E2E_OK: order event schema valid, order_id=%s' % evt['order_id'])
+          PYEOF
+          echo "$MSG" | python3 /tmp/check.py
+
+  update-gitops:
+    runs-on: ubuntu-24.04
+    needs: build-and-validate
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Update GitOps overlay image tags
+        run: |
+          TAG="$GITHUB_SHA"
+          for env in staging production; do
+            sed -i.bak "s/PLACEHOLDER_TAG/${TAG}/g" "gitops/overlays/${env}/kustomization.yaml"
+            rm -f "gitops/overlays/${env}/kustomization.yaml.bak"
+          done
+      - name: Commit and push GitOps overlays
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gitops/overlays/staging/kustomization.yaml gitops/overlays/production/kustomization.yaml
+          if git diff --cached --quiet; then
+            echo "no overlay change"
+            exit 0
+          fi
+          git commit -m "chore(gitops): update image tags to $GITHUB_SHA [skip ci]"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main

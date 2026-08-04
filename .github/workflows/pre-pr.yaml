@@ -1,0 +1,187 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Pre-merge CI (fast checks): lint + unit tests + manifest validation +
+# security scan, scoped to the files changed in the PR. No secrets and no
+# deployment. See docs/ci-strategy.md.
+
+name: "Pre-PR - Fast checks"
+
+on:
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: pre-pr-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go-services:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache-dependency-path: |
+            src/checkoutservice/go.sum
+            src/frontend/go.sum
+            src/productcatalogservice/go.sum
+            src/shippingservice/go.sum
+      - name: Lint & Test Go services
+        run: |
+          set -e
+          for SERVICE in shippingservice productcatalogservice frontend checkoutservice; do
+            echo "== testing $SERVICE =="
+            pushd src/$SERVICE
+            gofmt -l .
+            go vet ./...
+            go test ./...
+            popd
+          done
+
+  dotnet-cartservice:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v5
+        env:
+          DOTNET_INSTALL_DIR: "./.dotnet"
+        with:
+          dotnet-version: '10.0'
+      - name: Test cartservice
+        run: dotnet test src/cartservice/
+
+  node-services:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        service: [currencyservice, paymentservice]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: src/${{ matrix.service }}/package-lock.json
+      - name: Install + syntax-check ${{ matrix.service }}
+        run: |
+          cd src/${{ matrix.service }}
+          npm ci
+          find . -maxdepth 1 -name '*.js' -exec node --check {} \;
+
+  python-services:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        service: [emailservice, recommendationservice, loadgenerator, data_processing]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Compile all Python
+        run: |
+          cd src/${{ matrix.service }}
+          python -m py_compile ./*.py
+      - name: Ruff (strict, changed files only)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          CHANGED=$(git diff --name-only "${BASE_SHA}"...HEAD -- 'src/${{ matrix.service }}/**/*.py')
+          if [ -z "$CHANGED" ]; then
+            echo "no .py files changed in ${{ matrix.service }}; skipping ruff"
+            exit 0
+          fi
+          pip install ruff
+          # shellcheck disable=SC2086
+          ruff check $CHANGED
+
+  java-adservice:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Test adservice
+        run: |
+          cd src/adservice
+          ./gradlew --no-daemon test
+
+  manifests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: azure/setup-kubectl@v4
+      - name: kustomize build kubernetes-manifests
+        run: kubectl kustomize kubernetes-manifests > /dev/null
+      - name: kustomize build kustomize base + tests
+        run: |
+          cd kustomize
+          kubectl kustomize . > /dev/null
+          for d in tests/*/; do echo "build $d"; kubectl kustomize "$d" > /dev/null; done
+      - name: kustomize build gitops overlays
+        run: |
+          kubectl kustomize gitops/overlays/staging > /dev/null
+          kubectl kustomize gitops/overlays/production > /dev/null
+      - name: helm lint & template
+        run: |
+          helm lint helm-chart
+          helm template data-platform helm-chart > /dev/null
+
+  security-scan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      # Report-only: the legacy codebase has a pre-existing scan baseline.
+      # Findings surface in the Actions UI; blocking enforcement can be
+      # enabled later after the baseline is addressed.
+      - name: Trivy filesystem scan (report-only)
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-fs.sarif
+          exit-code: '0'
+          ignore-unfixed: true
+      - name: Upload filesystem SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+      - name: Trivy config scan (K8s manifests, report-only)
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          scan-type: config
+          scan-ref: kubernetes-manifests
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-config.sarif
+          exit-code: '0'
+      - name: Upload config SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-config.sarif

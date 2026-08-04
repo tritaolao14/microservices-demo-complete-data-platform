@@ -55,8 +55,12 @@ jobs:
       timeout-minutes: 10
       run: |
         dotnet test src/cartservice/
+  # LEGACY GKE deploy — giữ nguyên mã nhưng KHÔNG sử dụng.
+  # Luồng CI chính dùng local deploy (kind), xem .github/workflows/post-main.yaml
+  # và docs/ci-strategy.md.
   deployment-tests:
     runs-on: ubuntu-24.04
+    if: false
     needs: code-tests
     permissions:
       contents: read
