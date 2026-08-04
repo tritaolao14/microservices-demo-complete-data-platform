@@ -145,3 +145,20 @@ PR đóng → (tùy chọn) dọn dẹp local cluster
 - [x] **Không xóa** các file legacy GKE (`ci-pr.yaml`, `ci-main.yaml`,
       `cloudbuild.yaml`, `cleanup.yaml`) — job `deployment-tests` đã bị chặn `if: false`.
 - [x] Thêm env `KAFKA_BROKER=kafka:9092` cho `checkoutservice`.
+
+---
+
+## 7. Ghi chú vận hành (rút ra khi kiểm tra thực tế)
+
+- **GitHub chỉ đăng ký workflow file có trên default branch (`main`)** (hoặc đã
+  từng chạy ít nhất 1 lần). Vì vậy một workflow mới như `post-main.yaml`:
+  - `workflow_dispatch` trả `404` cho tới khi file tồn tại trên `main`.
+  - Push lên nhánh `release/*` cũng **không trigger** workflow nếu file chưa
+    được đăng ký (GitHub không scan workflow file ở branch không phải default).
+  - Cách duy nhất để test luồng `post-main` trước khi merge vào `main` là đưa
+    file lên `main` (qua PR thật) hoặc chấp nhận test sau khi merge.
+- Push **tạo nhánh mới** là `CreateEvent`, không phải `push` → không trigger
+  `on: push`. Cần push commit thay đổi thực lên nhánh đã tồn tại.
+- Empty commit (không thay đổi file) với `paths-ignore: gitops/**` sẽ bị skip.
+- `pre-pr.yaml` được đăng ký ngay vì event `pull_request` đã kích hoạt nó chạy;
+  đó là lý do các job pre-pr hiển thị đúng trên PR.
