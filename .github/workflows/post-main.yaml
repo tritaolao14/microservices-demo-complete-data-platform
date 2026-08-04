@@ -31,6 +31,7 @@ on:
       - release/*
     paths-ignore:
       - 'gitops/**'
+  workflow_dispatch: {}
 
 concurrency:
   group: post-main-${{ github.workflow }}-${{ github.ref }}
