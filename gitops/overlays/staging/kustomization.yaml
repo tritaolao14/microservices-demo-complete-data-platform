@@ -1,0 +1,55 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Staging overlay: deploys the app into the onlineboutique-staging namespace
+# on the local minikube cluster, using images published to the local registry.
+# PLACEHOLDER_TAG is replaced by the CI/local script with the actual image tag.
+# loadgenerator is not part of the base (deployed separately, see base README).
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: onlineboutique-staging
+resources:
+- ../../base
+images:
+- name: adservice
+  newName: 127.0.0.1:5000/adservice
+  newTag: PLACEHOLDER_TAG
+- name: cartservice
+  newName: 127.0.0.1:5000/cartservice
+  newTag: PLACEHOLDER_TAG
+- name: checkoutservice
+  newName: 127.0.0.1:5000/checkoutservice
+  newTag: PLACEHOLDER_TAG
+- name: currencyservice
+  newName: 127.0.0.1:5000/currencyservice
+  newTag: PLACEHOLDER_TAG
+- name: emailservice
+  newName: 127.0.0.1:5000/emailservice
+  newTag: PLACEHOLDER_TAG
+- name: frontend
+  newName: 127.0.0.1:5000/frontend
+  newTag: PLACEHOLDER_TAG
+- name: paymentservice
+  newName: 127.0.0.1:5000/paymentservice
+  newTag: PLACEHOLDER_TAG
+- name: productcatalogservice
+  newName: 127.0.0.1:5000/productcatalogservice
+  newTag: PLACEHOLDER_TAG
+- name: recommendationservice
+  newName: 127.0.0.1:5000/recommendationservice
+  newTag: PLACEHOLDER_TAG
+- name: shippingservice
+  newName: 127.0.0.1:5000/shippingservice
+  newTag: PLACEHOLDER_TAG
