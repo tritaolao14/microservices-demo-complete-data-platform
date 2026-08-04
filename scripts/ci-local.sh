@@ -17,13 +17,13 @@
 # Local CI pipeline: replicate the CI flow on the developer machine.
 #
 # Steps:
-#   1. Ensure a local docker registry runs on 127.0.0.1:5000.
-#   2. Run fast quality checks (go vet/test, python compile, node --check,
+#   1. Run fast quality checks (go vet/test, python compile, node --check,
 #      kustomize build).
-#   3. Build all service images and push them to the local registry.
-#   4. Validate artifacts on an ephemeral kind cluster (smoke test + Kafka
+#   2. Build all service images for the host platform into the local docker
+#      daemon (no registry push needed; kind loads images directly).
+#   3. Validate artifacts on an ephemeral kind cluster (smoke test + Kafka
 #      order-event E2E).
-#   5. Update image tags in gitops/overlays/{staging,production}.
+#   4. Update image tags in gitops/overlays/{staging,production}.
 #
 # Env overrides:
 #   REGISTRY (default 127.0.0.1:5000)
@@ -79,8 +79,14 @@ quality_checks() {
 
 # --- Step 2: build + push images ---
 build_and_push() {
-  log "build + push images to ${REGISTRY} with tag ${TAG}"
-  skaffold build --push \
+  log "build images to local daemon with tag ${TAG} for host platform"
+  case "$(uname -m)" in
+    x86_64) PLATFORM="linux/amd64" ;;
+    arm64|aarch64) PLATFORM="linux/arm64" ;;
+    *) PLATFORM="linux/amd64" ;;
+  esac
+  skaffold build \
+    --platform="${PLATFORM}" \
     --file-output=tags.json \
     --default-repo="${REGISTRY}" --tag="${TAG}"
 }
