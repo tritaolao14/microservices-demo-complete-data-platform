@@ -123,7 +123,7 @@ jobs:
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
       - name: Test adservice
         run: |
           cd src/adservice
@@ -173,6 +173,7 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-fs.sarif
+          category: trivy-fs
       - name: Trivy config scan (K8s manifests, report-only)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -186,4 +187,6 @@ jobs:
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
+          sarif_file: trivy-config.sarif
+          category: trivy-config
           sarif_file: trivy-config.sarif
