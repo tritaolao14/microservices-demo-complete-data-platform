@@ -148,12 +148,10 @@ jobs:
           echo "$HOME/bin" >> "$GITHUB_PATH"
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
-      - name: Start local registry
+      - name: Build images (single platform, into local daemon)
         run: |
-          docker run -d -p 5000:5000 --name registry registry:2
-      - name: Build & push images to local registry
-        run: |
-          skaffold build --push \
+          skaffold build \
+            --platform=linux/amd64 \
             --file-output=tags.json \
             --default-repo=127.0.0.1:5000 \
             --tag=$GITHUB_SHA
