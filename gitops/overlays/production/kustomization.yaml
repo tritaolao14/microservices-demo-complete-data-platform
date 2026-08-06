@@ -14,7 +14,7 @@
 
 # Production overlay: deploys the app into the onlineboutique-prod namespace
 # on the local kind cluster, using images published to GHCR (private).
-# PLACEHOLDER_TAG is replaced by the CI/local script with the actual image tag.
+# demo is replaced by the CI/local script with the actual image tag.
 # loadgenerator is not part of the base (deployed separately, see base README).
 
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -25,34 +25,34 @@ resources:
 images:
 - name: adservice
   newName: ghcr.io/tritaolao14/adservice
-  newTag: PLACEHOLDER_TAG
+  newTag: demo
 - name: cartservice
   newName: ghcr.io/tritaolao14/cartservice
-  newTag: PLACEHOLDER_TAG
+  newTag: demo
 - name: checkoutservice
   newName: ghcr.io/tritaolao14/checkoutservice
-  newTag: PLACEHOLDER_TAG
+  newTag: demo
 - name: currencyservice
   newName: ghcr.io/tritaolao14/currencyservice
-  newTag: PLACEHOLDER_TAG
+  newTag: demo
 - name: emailservice
   newName: ghcr.io/tritaolao14/emailservice
-  newTag: PLACEHOLDER_TAG
+  newTag: demo
 - name: frontend
   newName: ghcr.io/tritaolao14/frontend
-  newTag: PLACEHOLDER_TAG
+  newTag: demo
 - name: paymentservice
   newName: ghcr.io/tritaolao14/paymentservice
-  newTag: PLACEHOLDER_TAG
+  newTag: demo
 - name: productcatalogservice
   newName: ghcr.io/tritaolao14/productcatalogservice
-  newTag: PLACEHOLDER_TAG
+  newTag: demo
 - name: recommendationservice
   newName: ghcr.io/tritaolao14/recommendationservice
-  newTag: PLACEHOLDER_TAG
+  newTag: demo
 - name: shippingservice
   newName: ghcr.io/tritaolao14/shippingservice
-  newTag: PLACEHOLDER_TAG
+  newTag: demo
 patches:
 - target:
     kind: Deployment
