@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   go-services:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
         with:
@@ -60,7 +60,7 @@ jobs:
           done
 
   dotnet-cartservice:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
         with:
@@ -74,7 +74,7 @@ jobs:
         run: dotnet test src/cartservice/
 
   node-services:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
         service: [currencyservice, paymentservice]
@@ -92,7 +92,7 @@ jobs:
           find . -maxdepth 1 -name '*.js' -exec node --check {} \;
 
   python-services:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
         service: [emailservice, recommendationservice, loadgenerator, data_processing]
@@ -121,7 +121,7 @@ jobs:
           ruff check $CHANGED
 
   java-adservice:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-java@v5
@@ -135,7 +135,7 @@ jobs:
           ./gradlew --no-daemon test
 
   manifests:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
       - uses: azure/setup-kubectl@v4
@@ -156,7 +156,7 @@ jobs:
           helm template data-platform helm-chart > /dev/null
 
   security-scan:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     permissions:
       security-events: write
     steps:
