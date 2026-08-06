@@ -25,34 +25,34 @@ resources:
 images:
 - name: adservice
   newName: ghcr.io/tritaolao14/adservice
-  newTag: demo
+  newTag: PLACEHOLDER_TAG
 - name: cartservice
   newName: ghcr.io/tritaolao14/cartservice
-  newTag: demo
+  newTag: PLACEHOLDER_TAG
 - name: checkoutservice
   newName: ghcr.io/tritaolao14/checkoutservice
-  newTag: demo
+  newTag: PLACEHOLDER_TAG
 - name: currencyservice
   newName: ghcr.io/tritaolao14/currencyservice
-  newTag: demo
+  newTag: PLACEHOLDER_TAG
 - name: emailservice
   newName: ghcr.io/tritaolao14/emailservice
-  newTag: demo
+  newTag: PLACEHOLDER_TAG
 - name: frontend
   newName: ghcr.io/tritaolao14/frontend
-  newTag: demo
+  newTag: PLACEHOLDER_TAG
 - name: paymentservice
   newName: ghcr.io/tritaolao14/paymentservice
-  newTag: demo
+  newTag: PLACEHOLDER_TAG
 - name: productcatalogservice
   newName: ghcr.io/tritaolao14/productcatalogservice
-  newTag: demo
+  newTag: PLACEHOLDER_TAG
 - name: recommendationservice
   newName: ghcr.io/tritaolao14/recommendationservice
-  newTag: demo
+  newTag: PLACEHOLDER_TAG
 - name: shippingservice
   newName: ghcr.io/tritaolao14/shippingservice
-  newTag: demo
+  newTag: PLACEHOLDER_TAG
 patches:
 - target:
     kind: Deployment
