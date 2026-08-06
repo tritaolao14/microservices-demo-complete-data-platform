@@ -28,6 +28,7 @@ pkg/
 release/wi-kubernetes-manifests.yaml
 vendor/
 gha-creds-*.json
+tags.json
 # Go binaries
 src/*/checkoutservice
 src/*/emailservice
