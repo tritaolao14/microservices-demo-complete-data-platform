@@ -25,34 +25,34 @@ resources:
 images:
 - name: adservice
   newName: ghcr.io/tritaolao14/adservice
-  newTag: PLACEHOLDER_TAG
+  newTag: 4f4562f0bd5045a03659f7bcc4c2526b817c04e8
 - name: cartservice
   newName: ghcr.io/tritaolao14/cartservice
-  newTag: PLACEHOLDER_TAG
+  newTag: 4f4562f0bd5045a03659f7bcc4c2526b817c04e8
 - name: checkoutservice
   newName: ghcr.io/tritaolao14/checkoutservice
-  newTag: PLACEHOLDER_TAG
+  newTag: 4f4562f0bd5045a03659f7bcc4c2526b817c04e8
 - name: currencyservice
   newName: ghcr.io/tritaolao14/currencyservice
-  newTag: PLACEHOLDER_TAG
+  newTag: 4f4562f0bd5045a03659f7bcc4c2526b817c04e8
 - name: emailservice
   newName: ghcr.io/tritaolao14/emailservice
-  newTag: PLACEHOLDER_TAG
+  newTag: 4f4562f0bd5045a03659f7bcc4c2526b817c04e8
 - name: frontend
   newName: ghcr.io/tritaolao14/frontend
-  newTag: PLACEHOLDER_TAG
+  newTag: 4f4562f0bd5045a03659f7bcc4c2526b817c04e8
 - name: paymentservice
   newName: ghcr.io/tritaolao14/paymentservice
-  newTag: PLACEHOLDER_TAG
+  newTag: 4f4562f0bd5045a03659f7bcc4c2526b817c04e8
 - name: productcatalogservice
   newName: ghcr.io/tritaolao14/productcatalogservice
-  newTag: PLACEHOLDER_TAG
+  newTag: 4f4562f0bd5045a03659f7bcc4c2526b817c04e8
 - name: recommendationservice
   newName: ghcr.io/tritaolao14/recommendationservice
-  newTag: PLACEHOLDER_TAG
+  newTag: 4f4562f0bd5045a03659f7bcc4c2526b817c04e8
 - name: shippingservice
   newName: ghcr.io/tritaolao14/shippingservice
-  newTag: PLACEHOLDER_TAG
+  newTag: 4f4562f0bd5045a03659f7bcc4c2526b817c04e8
 patches:
 - target:
     kind: Deployment
