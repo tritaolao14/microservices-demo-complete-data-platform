@@ -28,6 +28,7 @@ on:
   push:
     branches:
       - main
+      - Anh200726
       - release/*
     paths-ignore:
       - 'gitops/**'
@@ -148,6 +149,12 @@ jobs:
           echo "$HOME/bin" >> "$GITHUB_PATH"
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: tritaolao14
+          password: ${{ secrets.GHCR_PAT }}
       - name: Build images (single platform, into local daemon)
         run: |
           skaffold build \
@@ -232,11 +239,25 @@ jobs:
           print('E2E_OK: order event schema valid, order_id=%s' % evt['order_id'])
           PYEOF
           echo "$MSG" | python3 /tmp/check.py
+      - name: Push images to GitHub Container Registry
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, subprocess
+          with open("tags.json") as f:
+              data = json.load(f)
+          builds = data.get("builds", {})
+          for name, info in builds.items():
+              local = info["tag"]
+              remote = f"ghcr.io/tritaolao14/{name}:{os.environ['GITHUB_SHA']}"
+              subprocess.run(["docker", "tag", local, remote], check=True)
+              subprocess.run(["docker", "push", remote], check=True)
+              print(f"pushed {remote}")
+          PYEOF
 
   update-gitops:
     runs-on: ubuntu-24.04
     needs: build-and-validate
-    if: github.ref == 'refs/heads/main'
+    if: github.ref_name == 'main' || github.ref_name == 'Anh200726'
     permissions:
       contents: write
     steps:
@@ -247,10 +268,15 @@ jobs:
       - name: Update GitOps overlay image tags
         run: |
           TAG="$GITHUB_SHA"
-          for env in staging production; do
-            sed -i.bak "s/PLACEHOLDER_TAG/${TAG}/g" "gitops/overlays/${env}/kustomization.yaml"
-            rm -f "gitops/overlays/${env}/kustomization.yaml.bak"
-          done
+          if [[ "${{ github.ref_name }}" == "Anh200726" ]]; then
+            echo "updating staging overlay on Anh200726"
+            sed -i.bak "s/PLACEHOLDER_TAG/${TAG}/g" "gitops/overlays/staging/kustomization.yaml"
+            rm -f "gitops/overlays/staging/kustomization.yaml.bak"
+          else
+            echo "updating production overlay on main"
+            sed -i.bak "s/PLACEHOLDER_TAG/${TAG}/g" "gitops/overlays/production/kustomization.yaml"
+            rm -f "gitops/overlays/production/kustomization.yaml.bak"
+          fi
       - name: Commit and push GitOps overlays
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -263,4 +289,4 @@ jobs:
             exit 0
           fi
           git commit -m "chore(gitops): update image tags to $GITHUB_SHA [skip ci]"
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" HEAD:${{ github.ref_name }}
