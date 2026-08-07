@@ -248,9 +248,10 @@ jobs:
           import json, os, subprocess
           with open("tags.json") as f:
               data = json.load(f)
-          builds = data.get("builds", {})
-          for name, info in builds.items():
-              local = info["tag"]
+          builds = data.get("builds", [])
+          for item in builds:
+              name = item["imageName"]
+              local = item["tag"]
               remote = f"ghcr.io/tritaolao14/{name}:{os.environ['GITHUB_SHA']}"
               subprocess.run(["docker", "tag", local, remote], check=True)
               subprocess.run(["docker", "push", remote], check=True)
