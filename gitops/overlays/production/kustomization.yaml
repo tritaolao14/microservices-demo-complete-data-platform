@@ -13,8 +13,8 @@
 # limitations under the License.
 
 # Production overlay: deploys the app into the onlineboutique-prod namespace
-# on the local minikube cluster, using images published to the local registry.
-# PLACEHOLDER_TAG is replaced by the CI/local script with the actual image tag.
+# on the local kind cluster, using images published to GHCR (private).
+# demo is replaced by the CI/local script with the actual image tag.
 # loadgenerator is not part of the base (deployed separately, see base README).
 
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -24,32 +24,40 @@ resources:
 - ../../base
 images:
 - name: adservice
-  newName: 127.0.0.1:5000/adservice
+  newName: ghcr.io/tritaolao14/adservice
   newTag: PLACEHOLDER_TAG
 - name: cartservice
-  newName: 127.0.0.1:5000/cartservice
+  newName: ghcr.io/tritaolao14/cartservice
   newTag: PLACEHOLDER_TAG
 - name: checkoutservice
-  newName: 127.0.0.1:5000/checkoutservice
+  newName: ghcr.io/tritaolao14/checkoutservice
   newTag: PLACEHOLDER_TAG
 - name: currencyservice
-  newName: 127.0.0.1:5000/currencyservice
+  newName: ghcr.io/tritaolao14/currencyservice
   newTag: PLACEHOLDER_TAG
 - name: emailservice
-  newName: 127.0.0.1:5000/emailservice
+  newName: ghcr.io/tritaolao14/emailservice
   newTag: PLACEHOLDER_TAG
 - name: frontend
-  newName: 127.0.0.1:5000/frontend
+  newName: ghcr.io/tritaolao14/frontend
   newTag: PLACEHOLDER_TAG
 - name: paymentservice
-  newName: 127.0.0.1:5000/paymentservice
+  newName: ghcr.io/tritaolao14/paymentservice
   newTag: PLACEHOLDER_TAG
 - name: productcatalogservice
-  newName: 127.0.0.1:5000/productcatalogservice
+  newName: ghcr.io/tritaolao14/productcatalogservice
   newTag: PLACEHOLDER_TAG
 - name: recommendationservice
-  newName: 127.0.0.1:5000/recommendationservice
+  newName: ghcr.io/tritaolao14/recommendationservice
   newTag: PLACEHOLDER_TAG
 - name: shippingservice
-  newName: 127.0.0.1:5000/shippingservice
+  newName: ghcr.io/tritaolao14/shippingservice
   newTag: PLACEHOLDER_TAG
+patches:
+- target:
+    kind: Deployment
+  patch: |-
+    - op: add
+      path: /spec/template/spec/imagePullSecrets
+      value:
+      - name: ghcr-secret
