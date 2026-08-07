@@ -205,13 +205,16 @@ jobs:
       - name: Smoke test (loadgenerator)
         timeout-minutes: 10
         run: |
-          kubectl delete pod -l app=loadgenerator
+          echo "waiting for services to warm up before resetting loadgenerator"
+          sleep 30
+          kubectl delete pod -l app=loadgenerator || true
+          sleep 10
           REQUEST_COUNT="0"
           while [[ "$REQUEST_COUNT" -lt "50" ]]; do
             sleep 5
-            REQUEST_COUNT=$(kubectl logs -l app=loadgenerator | grep Aggregated | awk '{print $2}')
+            REQUEST_COUNT=$(kubectl logs -l app=loadgenerator | grep Aggregated | awk '{print $2}' | tail -1)
           done
-          ERROR_COUNT=$(kubectl logs -l app=loadgenerator | grep Aggregated | awk '{print $3}' | sed "s/[(][^)]*[)]//g")
+          ERROR_COUNT=$(kubectl logs -l app=loadgenerator | grep Aggregated | awk '{print $3}' | tail -1 | sed "s/[(][^)]*[)]//g")
           echo "loadgenerator aggregated requests=$REQUEST_COUNT errors=$ERROR_COUNT"
           [[ "$ERROR_COUNT" -gt "0" ]] && exit 1 || true
       - name: Verify Kafka topic "orders"
