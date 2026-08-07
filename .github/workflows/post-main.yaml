@@ -274,11 +274,11 @@ jobs:
           TAG="$GITHUB_SHA"
           if [[ "${{ github.ref_name }}" == "Anh200726" ]]; then
             echo "updating staging overlay on Anh200726"
-            sed -i.bak "s/PLACEHOLDER_TAG/${TAG}/g" "gitops/overlays/staging/kustomization.yaml"
+            sed -i.bak "s/^  newTag:.*/  newTag: ${TAG}/g" "gitops/overlays/staging/kustomization.yaml"
             rm -f "gitops/overlays/staging/kustomization.yaml.bak"
           else
             echo "updating production overlay on main"
-            sed -i.bak "s/PLACEHOLDER_TAG/${TAG}/g" "gitops/overlays/production/kustomization.yaml"
+            sed -i.bak "s/^  newTag:.*/  newTag: ${TAG}/g" "gitops/overlays/production/kustomization.yaml"
             rm -f "gitops/overlays/production/kustomization.yaml.bak"
           fi
       - name: Commit and push GitOps overlays
