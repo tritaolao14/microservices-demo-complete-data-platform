@@ -164,6 +164,11 @@ jobs:
             --tag=$GITHUB_SHA
       - name: Create kind cluster
         run: kind create cluster
+      - name: Apply MetalLB IPAddressPool + L2Advertisement
+        run: |
+          kubectl config use-context kind-kind
+          kubectl create namespace metallb-system --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -f kubernetes-manifests/metallb-pool.yaml
       - name: Deploy to kind (CI validation)
         run: |
           skaffold deploy \
