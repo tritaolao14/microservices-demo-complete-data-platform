@@ -26,6 +26,7 @@ resources:
  - productcatalogservice.yaml
  - recommendationservice.yaml
  - shippingservice.yaml
+ - metallb-pool.yaml
  - kafka.yaml
  - postgresql.yaml
  - minio.yaml
