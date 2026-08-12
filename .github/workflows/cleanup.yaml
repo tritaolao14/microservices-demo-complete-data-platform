@@ -29,6 +29,7 @@ on:
       - '.github/workflows/terraform-validate-ci.yaml'
 jobs:
   cleanup-namespace:
+    if: false  # Disabled - legacy GKE cleanup workflow
     runs-on: ubuntu-24.04
     environment: gke-staging
     permissions:
