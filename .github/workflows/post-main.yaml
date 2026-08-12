@@ -168,7 +168,7 @@ jobs:
         run: |
           kubectl config use-context kind-kind
           kubectl create namespace metallb-system --dry-run=client -o yaml | kubectl apply -f -
-          kubectl apply -f kubernetes-manifests/metallb-pool.yaml
+          kubectl apply -f gitops/infra/metallb/metallb-pool.yaml
       - name: Deploy to kind (CI validation)
         run: |
           skaffold deploy \

@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# ArgoCD Applications for the staging and production environments.
-# Apply with: kubectl apply -k gitops/argocd
+# MetalLB infrastructure config. Kept as its own kustomization (and its own
+# ArgoCD Application) so the IPAddressPool / L2Advertisement stay in the
+# metallb-system namespace, which MetalLB controller requires. It must NOT be
+# part of the app overlays, because their `namespace:` field would rewrite it
+# into the app namespace.
 
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-- staging.yaml
-- production.yaml
-- metallb.yaml
+- metallb-pool.yaml
