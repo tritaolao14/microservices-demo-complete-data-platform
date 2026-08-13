@@ -25,37 +25,37 @@ resources:
 images:
 - name: adservice
   newName: ghcr.io/tritaolao14/adservice
-  newTag: c42390cae7fa612c02956849cae5a1de2d95fbf7
+  newTag: f0cdcea56b23544a96cffc1231cc1b8d033ca220
 - name: cartservice
   newName: ghcr.io/tritaolao14/cartservice
-  newTag: c42390cae7fa612c02956849cae5a1de2d95fbf7
+  newTag: f0cdcea56b23544a96cffc1231cc1b8d033ca220
 - name: checkoutservice
   newName: ghcr.io/tritaolao14/checkoutservice
-  newTag: c42390cae7fa612c02956849cae5a1de2d95fbf7
+  newTag: f0cdcea56b23544a96cffc1231cc1b8d033ca220
 - name: currencyservice
   newName: ghcr.io/tritaolao14/currencyservice
-  newTag: c42390cae7fa612c02956849cae5a1de2d95fbf7
+  newTag: f0cdcea56b23544a96cffc1231cc1b8d033ca220
 - name: dataingestion
   newName: ghcr.io/tritaolao14/dataingestion
-  newTag: c42390cae7fa612c02956849cae5a1de2d95fbf7
+  newTag: f0cdcea56b23544a96cffc1231cc1b8d033ca220
 - name: emailservice
   newName: ghcr.io/tritaolao14/emailservice
-  newTag: c42390cae7fa612c02956849cae5a1de2d95fbf7
+  newTag: f0cdcea56b23544a96cffc1231cc1b8d033ca220
 - name: frontend
   newName: ghcr.io/tritaolao14/frontend
-  newTag: c42390cae7fa612c02956849cae5a1de2d95fbf7
+  newTag: f0cdcea56b23544a96cffc1231cc1b8d033ca220
 - name: paymentservice
   newName: ghcr.io/tritaolao14/paymentservice
-  newTag: c42390cae7fa612c02956849cae5a1de2d95fbf7
+  newTag: f0cdcea56b23544a96cffc1231cc1b8d033ca220
 - name: productcatalogservice
   newName: ghcr.io/tritaolao14/productcatalogservice
-  newTag: c42390cae7fa612c02956849cae5a1de2d95fbf7
+  newTag: f0cdcea56b23544a96cffc1231cc1b8d033ca220
 - name: recommendationservice
   newName: ghcr.io/tritaolao14/recommendationservice
-  newTag: c42390cae7fa612c02956849cae5a1de2d95fbf7
+  newTag: f0cdcea56b23544a96cffc1231cc1b8d033ca220
 - name: shippingservice
   newName: ghcr.io/tritaolao14/shippingservice
-  newTag: c42390cae7fa612c02956849cae5a1de2d95fbf7
+  newTag: f0cdcea56b23544a96cffc1231cc1b8d033ca220
 patches:
 - target:
     kind: Deployment
