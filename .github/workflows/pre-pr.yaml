@@ -95,7 +95,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        service: [emailservice, recommendationservice, loadgenerator, data_processing]
+        service: [emailservice, recommendationservice, loadgenerator, data_processing, dataingestion]
     steps:
       - uses: actions/checkout@v6
         with:

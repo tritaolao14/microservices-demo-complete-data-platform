@@ -35,6 +35,9 @@ images:
 - name: currencyservice
   newName: ghcr.io/tritaolao14/currencyservice
   newTag: PLACEHOLDER_TAG
+- name: dataingestion
+  newName: ghcr.io/tritaolao14/dataingestion
+  newTag: PLACEHOLDER_TAG
 - name: emailservice
   newName: ghcr.io/tritaolao14/emailservice
   newTag: PLACEHOLDER_TAG

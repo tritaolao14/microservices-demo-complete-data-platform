@@ -47,6 +47,8 @@ build:
     context: src/frontend
   - image: adservice
     context: src/adservice
+  - image: dataingestion
+    context: src/dataingestion
   tagPolicy:
     gitCommit: {}
   local:
