@@ -137,6 +137,7 @@ Find **Protocol Buffers Descriptions** at the [`./protos` directory](/protos).
 ## Documentation
 
 - [Development](/docs/development-guide.md) to learn how to run and develop this app locally.
+- [LoadGenerator operations](/docs/loadgenerator.md) to learn how to enable/disable the load generator and verify the Kafka order-event flow.
 
 ## Demos featuring Online Boutique
 
