@@ -1,0 +1,61 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dataingestion
+  labels:
+    app: dataingestion
+spec:
+  selector:
+    matchLabels:
+      app: dataingestion
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: dataingestion
+    spec:
+      serviceAccountName: dataingestion
+      terminationGracePeriodSeconds: 5
+      restartPolicy: Always
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+      - name: main
+        image: dataingestion
+        env:
+        - name: KAFKA_BROKER
+          value: "kafka:9092"
+        - name: KAFKA_TOPIC
+          value: "orders"
+        - name: KAFKA_CONSUMER_GROUP
+          value: "dataingestion"
+        - name: KAFKA_AUTO_OFFSET_RESET
+          value: "latest"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dataingestion
