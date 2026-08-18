@@ -43,15 +43,17 @@ spec:
           value: "1"
         - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
           value: "true"
+        - name: KAFKA_HEAP_OPTS
+          value: "-Xms512m -Xmx512m"
         - name: CLUSTER_ID
           value: "MkU3OEVBNTcwNTJENDM2Qk"
         resources:
           requests:
             cpu: 200m
-            memory: 256Mi
+            memory: 1Gi
           limits:
-            cpu: 500m
-            memory: 512Mi
+            cpu: 1000m
+            memory: 2Gi
 ---
 apiVersion: v1
 kind: Service
