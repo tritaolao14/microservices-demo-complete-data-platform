@@ -18,7 +18,7 @@
 # - 1. building/pushing images
 # - 2. injecting tags into YAML manifests
 # - 3. creating a new git tag
-# - 4. pushing the tag/commit to main.
+# - 4. pushing the tag/commit to Anh200726.
 
 set -euo pipefail
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -43,7 +43,7 @@ if [[ $(git status -s | wc -l) -gt 0 ]]; then
 fi
 
 # make sure local source is up to date
-git checkout main
+git checkout Anh200726
 git pull
 
 # build and push images
