@@ -28,8 +28,6 @@ on:
   push:
     branches:
       - main
-      - Anh200726
-      - release/*
     paths-ignore:
       - 'gitops/**'
   workflow_dispatch: {}
@@ -271,7 +269,7 @@ jobs:
   update-gitops:
     runs-on: ubuntu-24.04
     needs: build-and-validate
-    if: github.ref_name == 'main' || github.ref_name == 'Anh200726'
+    if: github.ref_name == 'main'
     permissions:
       contents: write
     steps:
@@ -282,22 +280,16 @@ jobs:
       - name: Update GitOps overlay image tags
         run: |
           TAG="$GITHUB_SHA"
-          if [[ "${{ github.ref_name }}" == "Anh200726" ]]; then
-            echo "updating staging overlay on Anh200726"
-            sed -i.bak "s/^  newTag:.*/  newTag: ${TAG}/g" "gitops/overlays/staging/kustomization.yaml"
-            rm -f "gitops/overlays/staging/kustomization.yaml.bak"
-          else
-            echo "updating production overlay on main"
-            sed -i.bak "s/^  newTag:.*/  newTag: ${TAG}/g" "gitops/overlays/production/kustomization.yaml"
-            rm -f "gitops/overlays/production/kustomization.yaml.bak"
-          fi
+          echo "updating production overlay on main"
+          sed -i.bak "s/^  newTag:.*/  newTag: ${TAG}/g" "gitops/overlays/production/kustomization.yaml"
+          rm -f "gitops/overlays/production/kustomization.yaml.bak"
       - name: Commit and push GitOps overlays
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add gitops/overlays/staging/kustomization.yaml gitops/overlays/production/kustomization.yaml
+          git add gitops/overlays/production/kustomization.yaml
           if git diff --cached --quiet; then
             echo "no overlay change"
             exit 0

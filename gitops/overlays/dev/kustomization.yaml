@@ -1,0 +1,67 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Dev overlay: deploys the app into the onlineboutique-dev namespace
+# on the local kind cluster, using images published to GHCR (private).
+# The tag is updated incrementally by the dev-ci workflow (only for
+# changed services), not by the heavy post-main pipeline.
+# loadgenerator is not part of the base (deployed separately, see base README).
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: onlineboutique-dev
+resources:
+- ../../base
+images:
+- name: adservice
+  newName: ghcr.io/tritaolao14/adservice
+  newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
+- name: cartservice
+  newName: ghcr.io/tritaolao14/cartservice
+  newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
+- name: checkoutservice
+  newName: ghcr.io/tritaolao14/checkoutservice
+  newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
+- name: currencyservice
+  newName: ghcr.io/tritaolao14/currencyservice
+  newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
+- name: dataingestion
+  newName: ghcr.io/tritaolao14/dataingestion
+  newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
+- name: emailservice
+  newName: ghcr.io/tritaolao14/emailservice
+  newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
+- name: frontend
+  newName: ghcr.io/tritaolao14/frontend
+  newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
+- name: paymentservice
+  newName: ghcr.io/tritaolao14/paymentservice
+  newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
+- name: productcatalogservice
+  newName: ghcr.io/tritaolao14/productcatalogservice
+  newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
+- name: recommendationservice
+  newName: ghcr.io/tritaolao14/recommendationservice
+  newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
+- name: shippingservice
+  newName: ghcr.io/tritaolao14/shippingservice
+  newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
+patches:
+- target:
+    kind: Deployment
+  patch: |-
+    - op: add
+      path: /spec/template/spec/imagePullSecrets
+      value:
+      - name: ghcr-secret

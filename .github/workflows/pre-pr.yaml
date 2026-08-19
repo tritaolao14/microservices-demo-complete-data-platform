@@ -148,6 +148,7 @@ jobs:
           for d in tests/*/; do echo "build $d"; kubectl kustomize "$d" > /dev/null; done
       - name: kustomize build gitops overlays
         run: |
+          kubectl kustomize gitops/overlays/dev > /dev/null
           kubectl kustomize gitops/overlays/staging > /dev/null
           kubectl kustomize gitops/overlays/production > /dev/null
       - name: helm lint & template

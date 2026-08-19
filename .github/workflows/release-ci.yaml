@@ -1,0 +1,118 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Release CI: build the full stack with skaffold, push to GHCR, and
+# update the staging overlay image tags. ArgoCD staging app auto-syncs
+# → deploy into onlineboutique-staging.
+#
+# Triggered on push to release/* branches (e.g. from make-release.yaml).
+# Does not run smoke tests or create kind clusters — those belong to
+# the post-main pipeline on main (production).
+
+name: "Release CI - Build & deploy staging"
+
+on:
+  push:
+    branches:
+      - release/*
+    paths-ignore:
+      - 'gitops/**'
+  workflow_dispatch: {}
+
+concurrency:
+  group: release-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-stage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Install skaffold
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -Lo "$HOME/bin/skaffold" https://storage.googleapis.com/skaffold/releases/v2.23.0/skaffold-linux-amd64
+          chmod +x "$HOME/bin/skaffold"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: tritaolao14
+          password: ${{ secrets.GHCR_PAT }}
+      - name: Build and push all images to GHCR
+        run: |
+          skaffold build \
+            --platform=linux/amd64 \
+            --file-output=tags.json \
+            --default-repo=ghcr.io/tritaolao14 \
+            --tag=$GITHUB_SHA \
+            --push
+      - name: Update staging overlay image tags
+        run: |
+          TAG="${{ github.sha }}"
+          OVERLAY="gitops/overlays/staging/kustomization.yaml"
+
+          python3 - <<PY
+          import os, re, sys
+
+          tag = os.environ["TAG"]
+          overlay = os.environ["OVERLAY"]
+
+          # 11 services deployed via gitops (excludes shoppingassistantservice,
+          # loadgenerator, data_processing — not in gitops stack)
+          services = [
+              "adservice", "cartservice", "checkoutservice", "currencyservice",
+              "dataingestion", "emailservice", "frontend", "paymentservice",
+              "productcatalogservice", "recommendationservice", "shippingservice",
+          ]
+
+          text = open(overlay).read()
+
+          for svc in services:
+              pattern = (
+                  r"(- name: " + re.escape(svc) + r"\n"
+                  r"  newName: [^\n]+\n"
+                  r"  newTag: )\S+"
+              )
+              replacement = r"\g<1>" + tag
+              new_text, n = re.subn(pattern, replacement, text, count=1)
+              if n == 0:
+                  print(f"WARNING: image block for {svc} not found in {overlay}", file=sys.stderr)
+              else:
+                  text = new_text
+                  print(f"updated {svc} -> {tag}")
+
+          open(overlay, "w").write(text)
+          PY
+      - name: Commit and push staging overlay update
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.sha }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gitops/overlays/staging/kustomization.yaml
+          if git diff --cached --quiet; then
+            echo "no overlay change"
+            exit 0
+          fi
+          git commit -m "chore(gitops): release staging tags to $TAG [skip ci]"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" HEAD:${{ github.ref_name }}
