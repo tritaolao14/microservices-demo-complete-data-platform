@@ -24,7 +24,7 @@
 # Env:
 #   GHCR_PAT  (required; PAT with read:packages scope)
 #   OWNER     (GHCR account, default tritaolao14)
-#   TARGET_NAMESPACES (space-separated, default staging+prod)
+#   TARGET_NAMESPACES (space-separated, default dev+staging+prod)
 #   SYNC      (set to 1 to run argocd app sync, default 0)
 
 set -euo pipefail
@@ -33,7 +33,7 @@ REPO_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
 cd "${REPO_ROOT}"
 
 OWNER="${OWNER:-tritaolao14}"
-TARGET_NAMESPACES="${TARGET_NAMESPACES:-onlineboutique-staging onlineboutique-prod}"
+TARGET_NAMESPACES="${TARGET_NAMESPACES:-onlineboutique-dev onlineboutique-staging onlineboutique-prod}"
 
 log() { echo "[setup-argocd] $*" >&2; }
 
@@ -65,13 +65,13 @@ setup_pull_secret() {
 # --- Step 3: ArgoCD Applications ---
 apply_apps() {
   kubectl apply -k gitops/argocd
-  log "ArgoCD Applications applied (staging, production)"
+    log "ArgoCD Applications applied (dev, staging, production)"
 }
 
 # --- Step 4: sync (optional) ---
 sync_apps() {
   if [[ "${SYNC:-0}" == "1" ]]; then
-    for app in staging production; do
+    for app in dev staging production; do
       log "syncing app ${app}"
       argocd app sync "${app}" --async
     done

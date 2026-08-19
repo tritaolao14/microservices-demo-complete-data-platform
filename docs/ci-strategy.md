@@ -87,13 +87,16 @@ push main
   `kind create cluster` → `skaffold run --kube-context kind-kind`.
 - E2E Kafka là phần **bắt buộc** của dự án data platform, không phải tùy chọn.
 
-### Release (`push release/*` hoặc tag)
-- Kế thừa `make-release.yaml`: promote image từ staging → registry production,
-  regenerate `release/kubernetes-manifests.yaml`.
+### Release (`push release/*`)
+- Trigger: push vào branch `release/*` (thường từ `make-release.yaml`).
+- **release-ci.yaml**: skaffold build toàn bộ stack → push GHCR tag `$GITHUB_SHA` →
+  update `gitops/overlays/staging/kustomization.yaml` → commit. ArgoCD staging
+  auto-sync → deploy lên `onlineboutique-staging`.
+- Staging chỉ được deploy khi có release branch. Code mới lên staging phải qua release.
 
 ---
 
-## 4. Flow tổng thể
+## 4. Flow tổng thể — 3 môi trường
 
 ```text
 Push feature branch
@@ -103,20 +106,44 @@ Push feature branch
    lint + unit test + validate manifest  (theo path, song song, không secret)
    │   ◆ bắt buộc pass trước khi merge ◆
    ▼
-Merge PR → main
+Merge PR → Anh200726
    │
    ▼
------ POST-PR (push main) -----
-   1. tests đầy đủ
-   2. build + push image ($GITHUB_SHA)
-   3. deploy local (kind) + smoke test
-   4. E2E data platform (Kafka → ingestion → storage)
+----- DEV (push Anh200726) -----
+   dev-ci.yaml (~2-3 phút):
+     1. detect service đổi
+     2. docker build chỉ service đó → push GHCR tag $SHA
+     3. update dev overlay (chỉ block service đó)
+   │
+   ▼  ArgoCD dev auto-sync → deploy onlineboutique-dev
    │
    ▼
-   (tag/release/*) → promote production
+Tạo release branch (make-release.yaml)
+   │
+   ▼
+----- STAGING (push release/*) -----
+   release-ci.yaml (~5-10 phút):
+     1. skaffold build toàn stack → push GHCR tag $SHA
+     2. update staging overlay (cả 11 service)
+   │
+   ▼  ArgoCD staging auto-sync → deploy onlineboutique-staging
+   │
+   ▼
+Merge release PR → main
+   │
+   ▼
+----- PRODUCTION (push main) -----
+   post-main.yaml (~18 phút):
+     1. tests đầy đủ
+     2. build + push image ($GITHUB_SHA)
+     3. deploy local (kind) + smoke test
+     4. E2E data platform (Kafka → ingestion → storage)
+     5. update production overlay
+   │
+   ▼  ArgoCD production auto-sync → deploy onlineboutique-prod
+```
 
 PR đóng → (tùy chọn) dọn dẹp local cluster
-```
 
 ---
 
@@ -140,6 +167,8 @@ PR đóng → (tùy chọn) dọn dẹp local cluster
 - [x] Tạo workflow `pre-pr.yaml` (các job ở mục 2, path-filtered, sự kiện `pull_request`).
 - [ ] Bổ sung `checkoutservice` vào Go test matrix + viết unit test `publishOrderEvent`.
 - [x] Tạo workflow `post-main.yaml`: tests → build image → deploy local (kind) → smoke → E2E Kafka.
+- [x] Tạo workflow `dev-ci.yaml`: build affected service → push GHCR → update dev overlay → ArgoCD auto-sync.
+- [x] Tạo workflow `release-ci.yaml`: skaffold build full stack → push GHCR → update staging overlay → ArgoCD auto-sync.
 - [x] Cập nhật `manifests` job: validate `kubernetes-manifests/`, `kustomize/`, `helm-chart/`.
 - [ ] Thêm job lint/test cho `src/data_processing` (ruff, pytest) — hiện mới ở mức `py_compile`.
 - [x] **Không xóa** các file legacy GKE (`ci-pr.yaml`, `ci-main.yaml`,
