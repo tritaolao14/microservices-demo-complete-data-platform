@@ -23,6 +23,8 @@ kind: Kustomization
 namespace: onlineboutique-dev
 resources:
 - ../../base
+- kafka-ui.yaml
+- pgadmin.yaml
 images:
 - name: adservice
   newName: ghcr.io/tritaolao14/adservice
