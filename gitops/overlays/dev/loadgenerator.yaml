@@ -4,8 +4,6 @@ metadata:
   name: loadgenerator
   labels:
     app: loadgenerator
-  annotations:
-    argocd.argoproj.io/skip-reconcile: "true"
 spec:
   selector:
     matchLabels:
