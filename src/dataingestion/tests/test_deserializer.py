@@ -1,7 +1,6 @@
 """Unit tests for OrderDeserializer."""
 
 import pytest
-
 from domain.models import Money, OrderAddress, OrderItem, OrderStatus
 from infrastructure.deserializer import OrderDeserializer
 

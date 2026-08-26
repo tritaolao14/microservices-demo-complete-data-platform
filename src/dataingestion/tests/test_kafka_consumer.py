@@ -1,7 +1,6 @@
 from unittest.mock import MagicMock
 
 import pytest
-
 from infrastructure.config import InfraConfig
 from infrastructure.kafka_consumer import KafkaConsumerAdapter
 

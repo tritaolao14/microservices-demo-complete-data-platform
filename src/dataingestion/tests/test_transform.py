@@ -1,7 +1,6 @@
 from decimal import Decimal
 
 import pytest
-
 from domain.exceptions import InvalidOrderError
 from domain.models import Money, Order, OrderAddress, OrderItem, OrderStatus
 from domain.transform import transform_order, validate_order

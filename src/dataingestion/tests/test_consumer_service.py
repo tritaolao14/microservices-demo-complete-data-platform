@@ -3,7 +3,6 @@
 from decimal import Decimal
 
 import pytest
-
 from application.consumer_service import ConsumerService
 from domain.exceptions import InvalidOrderError
 from infrastructure.deserializer import OrderDeserializer
