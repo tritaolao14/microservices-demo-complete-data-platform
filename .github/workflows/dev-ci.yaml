@@ -108,8 +108,8 @@ jobs:
       - name: Update dev overlay image tags
         if: steps.changes.outputs.services != ''
         run: |
-          TAG="${{ github.sha }}"
-          OVERLAY="gitops/overlays/dev/kustomization.yaml"
+          export TAG="${{ github.sha }}"
+          export OVERLAY="gitops/overlays/dev/kustomization.yaml"
 
           python3 - <<PY
           import os, re, sys
