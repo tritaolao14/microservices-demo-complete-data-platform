@@ -37,6 +37,11 @@ WORKDIR /dataingestion
 COPY --from=builder /usr/local/lib/python3.14/ /usr/local/lib/python3.14/
 
 # Add the application
-COPY consumer.py .
+COPY domain/ ./domain/
+COPY infrastructure/ ./infrastructure/
+COPY application/ ./application/
+COPY presentation/ ./presentation/
+COPY common/ ./common/
+COPY main.py .
 
-ENTRYPOINT [ "python", "consumer.py" ]
+ENTRYPOINT [ "python", "main.py" ]
