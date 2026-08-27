@@ -47,6 +47,8 @@ spec:
           value: "dataingestion"
         - name: KAFKA_AUTO_OFFSET_RESET
           value: "latest"
+        - name: POSTGRES_DSN
+          value: "postgresql://boutique:boutique_pass@postgres:5432/product_catalog"
         resources:
           requests:
             cpu: 100m

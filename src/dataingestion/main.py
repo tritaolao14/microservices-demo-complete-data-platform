@@ -4,6 +4,7 @@ from common.logging import setup_logging
 from infrastructure.config import InfraConfig
 from infrastructure.deserializer import OrderDeserializer
 from infrastructure.kafka_consumer import KafkaConsumerAdapter
+from infrastructure.postgres_writer import PostgresWriter
 
 
 def main():
@@ -19,13 +20,15 @@ def main():
 
     consumer = KafkaConsumerAdapter(config)
     deserializer = OrderDeserializer()
-    service = ConsumerService(consumer, deserializer, logger)
+    writer = PostgresWriter(config.postgres_dsn)
+    service = ConsumerService(consumer, deserializer, writer, logger)
     
     try:
         service.run()
     except KeyboardInterrupt:
         logger.info("Shutting down data ingestion service")
     finally:
+        writer.close()
         consumer.close()
 
 if __name__ == "__main__":

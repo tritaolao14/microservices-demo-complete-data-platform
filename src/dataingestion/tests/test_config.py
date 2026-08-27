@@ -10,7 +10,8 @@ class TestInfraConfigDefaults:
             "KAFKA_BROKER", 
             "KAFKA_TOPIC",
             "KAFKA_CONSUMER_GROUP",
-            "KAFKA_AUTO_OFFSET_RESET"
+            "KAFKA_AUTO_OFFSET_RESET",
+            "POSTGRES_DSN",
         ]:
             monkeypatch.delenv(var, raising=False)
         importlib.reload(config)
@@ -20,6 +21,7 @@ class TestInfraConfigDefaults:
         assert cfg.kafka_topic == "orders"
         assert cfg.kafka_consumer_group == "dataingestion"
         assert cfg.kafka_auto_offset_reset == "latest"
+        assert cfg.postgres_dsn == "postgresql://boutique:boutique_pass@postgres:5432/product_catalog"
 
 class TestInfraConfigOverride:
     def test_override_broker(self, monkeypatch):
@@ -33,9 +35,11 @@ class TestInfraConfigOverride:
         monkeypatch.setenv("KAFKA_TOPIC", "test-orders")
         monkeypatch.setenv("KAFKA_CONSUMER_GROUP", "test-dataingestion")
         monkeypatch.setenv("KAFKA_AUTO_OFFSET_RESET", "earliest")
+        monkeypatch.setenv("POSTGRES_DSN", "postgresql://test:test@localhost/testdb")
         importlib.reload(config)
         cfg = config.InfraConfig()
         assert cfg.kafka_broker == "test-kafka:9093"
         assert cfg.kafka_topic == "test-orders"
         assert cfg.kafka_consumer_group == "test-dataingestion"
         assert cfg.kafka_auto_offset_reset == "earliest"
+        assert cfg.postgres_dsn == "postgresql://test:test@localhost/testdb"

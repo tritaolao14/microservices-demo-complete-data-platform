@@ -16,12 +16,14 @@ class ConsumerService:
     Depends on abstractions (DIP):
     - consumer: object with consume() -> Iterator[dict]
     - deserializer: OrderDeserializer
+    - writer: object with save(tuple[TransformedOrderItem]) -> None
     Does not import kafka-python.
     """
 
-    def __init__(self, consumer, deserializer, log=logger) -> None:
+    def __init__(self, consumer, deserializer, writer=None, log=logger) -> None:
         self._consumer = consumer
         self._deserializer = deserializer
+        self._writer = writer
         self._log = log
 
     def process(self, raw: dict) -> tuple[TransformedOrderItem, ...]:
@@ -30,10 +32,13 @@ class ConsumerService:
         return transform_order(order)
 
     def run(self) -> None:
-        """Consume loop: process each message, log results, skip invalid."""
+        """Consume loop: process each message, persist, log results, skip invalid."""
         for raw in self._consumer.consume():
             try:
-                for item in self.process(raw):
+                items = self.process(raw)
+                if self._writer:
+                    self._writer.save(items)
+                for item in items:
                     self._log.info(format_order_item(item))
             except InvalidOrderError as exc:
                 self._log.warning("Skipping invalid order: %s", exc)
