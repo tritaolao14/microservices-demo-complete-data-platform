@@ -39,6 +39,9 @@ jobs:
   build-and-push:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -144,7 +147,7 @@ jobs:
       - name: Commit and push overlay update
         if: steps.changes.outputs.services != ''
         env:
-          GH_TOKEN: ${{ secrets.GHCR_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.sha }}"
           git config user.name "github-actions[bot]"
