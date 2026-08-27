@@ -54,7 +54,11 @@ jobs:
       - name: Detect changed services
         id: changes
         run: |
-          CHANGED=$(git diff --name-only "${{ github.event.before }}" HEAD -- src/ \
+          BEFORE="${{ github.event.before }}"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            BEFORE="HEAD~1"
+          fi
+          CHANGED=$(git diff --name-only "$BEFORE" HEAD -- src/ \
             | sed -n 's|^src/\([^/]*\)/.*|\1|p' \
             | sort -u)
 
