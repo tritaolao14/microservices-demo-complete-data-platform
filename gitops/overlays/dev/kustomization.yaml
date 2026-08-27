@@ -41,7 +41,7 @@ images:
   newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
 - name: dataingestion
   newName: ghcr.io/tritaolao14/dataingestion
-  newTag: 1f9d0b697dd7366affe25e7a761618c715f876c8
+  newTag: 743ed7b8e78ea482edf80afa7f3d750177ae7f97
 - name: emailservice
   newName: ghcr.io/tritaolao14/emailservice
   newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
