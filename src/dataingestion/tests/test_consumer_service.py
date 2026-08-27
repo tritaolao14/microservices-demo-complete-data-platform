@@ -5,6 +5,7 @@ from decimal import Decimal
 import pytest
 from application.consumer_service import ConsumerService
 from domain.exceptions import InvalidOrderError
+from domain.models import TransformedOrderItem
 from infrastructure.deserializer import OrderDeserializer
 
 
@@ -33,6 +34,19 @@ class FakeLogger:
 
     def warning(self, msg: str, *args) -> None:
         self.warnings.append(msg % args if args else msg)
+
+
+class FakeWriter:
+    """Capture save() calls for assertions."""
+
+    def __init__(self) -> None:
+        self.saved: list[tuple[TransformedOrderItem, ...]] = []
+
+    def save(self, items: tuple[TransformedOrderItem, ...]) -> None:
+        self.saved.append(items)
+
+    def close(self) -> None:
+        pass
 
 
 def _valid_message(
@@ -69,7 +83,7 @@ class TestProcess:
     def test_process_valid_message(self):
         consumer = FakeConsumer([])
         deserializer = OrderDeserializer()
-        service = ConsumerService(consumer, deserializer, FakeLogger())
+        service = ConsumerService(consumer, deserializer, FakeWriter(), FakeLogger())
 
         result = service.process(_valid_message())
 
@@ -85,7 +99,7 @@ class TestProcess:
     def test_process_invalid_message_raises(self):
         consumer = FakeConsumer([])
         deserializer = OrderDeserializer()
-        service = ConsumerService(consumer, deserializer, FakeLogger())
+        service = ConsumerService(consumer, deserializer, FakeWriter(), FakeLogger())
 
         # Missing order_id -> InvalidOrderError
         raw = _valid_message(order_id="")
@@ -100,7 +114,8 @@ class TestRun:
         consumer = FakeConsumer(messages)
         deserializer = OrderDeserializer()
         fake_log = FakeLogger()
-        service = ConsumerService(consumer, deserializer, fake_log)
+        fake_writer = FakeWriter()
+        service = ConsumerService(consumer, deserializer, fake_writer, fake_log)
 
         service.run()
 
@@ -113,7 +128,8 @@ class TestRun:
         consumer = FakeConsumer(messages)
         deserializer = OrderDeserializer()
         fake_log = FakeLogger()
-        service = ConsumerService(consumer, deserializer, fake_log)
+        fake_writer = FakeWriter()
+        service = ConsumerService(consumer, deserializer, fake_writer, fake_log)
 
         service.run()  # should not raise
 
@@ -129,7 +145,8 @@ class TestRun:
         consumer = FakeConsumer(messages)
         deserializer = OrderDeserializer()
         fake_log = FakeLogger()
-        service = ConsumerService(consumer, deserializer, fake_log)
+        fake_writer = FakeWriter()
+        service = ConsumerService(consumer, deserializer, fake_writer, fake_log)
 
         service.run()
 
@@ -146,7 +163,8 @@ class TestRun:
         consumer = FakeConsumer(messages)
         deserializer = OrderDeserializer()
         fake_log = FakeLogger()
-        service = ConsumerService(consumer, deserializer, fake_log)
+        fake_writer = FakeWriter()
+        service = ConsumerService(consumer, deserializer, fake_writer, fake_log)
 
         service.run()
 
@@ -182,10 +200,46 @@ class TestRun:
         consumer = FakeConsumer([raw])
         deserializer = OrderDeserializer()
         fake_log = FakeLogger()
-        service = ConsumerService(consumer, deserializer, fake_log)
+        fake_writer = FakeWriter()
+        service = ConsumerService(consumer, deserializer, fake_writer, fake_log)
 
         service.run()
 
         assert len(fake_log.infos) == 2
         assert "SKU1" in fake_log.infos[0]
         assert "SKU2" in fake_log.infos[1]
+
+    def test_run_calls_writer_save(self):
+        messages = [_valid_message(order_id="uuid-1")]
+        consumer = FakeConsumer(messages)
+        deserializer = OrderDeserializer()
+        fake_writer = FakeWriter()
+        service = ConsumerService(consumer, deserializer, fake_writer, FakeLogger())
+
+        service.run()
+
+        assert len(fake_writer.saved) == 1
+        assert len(fake_writer.saved[0]) == 1
+        assert fake_writer.saved[0][0].order_id == "uuid-1"
+
+    def test_run_writer_not_called_on_invalid(self):
+        messages = [_valid_message(order_id="")]  # invalid
+        consumer = FakeConsumer(messages)
+        deserializer = OrderDeserializer()
+        fake_writer = FakeWriter()
+        service = ConsumerService(consumer, deserializer, fake_writer, FakeLogger())
+
+        service.run()
+
+        assert len(fake_writer.saved) == 0
+
+    def test_run_writer_skipped_when_none(self):
+        messages = [_valid_message(order_id="uuid-1")]
+        consumer = FakeConsumer(messages)
+        deserializer = OrderDeserializer()
+        fake_log = FakeLogger()
+        service = ConsumerService(consumer, deserializer, None, fake_log)
+
+        service.run()  # should not raise
+
+        assert len(fake_log.infos) == 1

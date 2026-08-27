@@ -64,6 +64,22 @@ def main():
             category_id INT REFERENCES categories(id),
             PRIMARY KEY (product_id, category_id)
         );
+        CREATE SCHEMA IF NOT EXISTS analytics;
+        CREATE TABLE IF NOT EXISTS analytics.order_items (
+            order_id VARCHAR(255) NOT NULL,
+            product_id VARCHAR(255) NOT NULL,
+            quantity INT NOT NULL,
+            currency_code VARCHAR(10) NOT NULL,
+            unit_price NUMERIC(12,2) NOT NULL,
+            total_price NUMERIC(12,2) NOT NULL,
+            event_timestamp TIMESTAMPTZ NOT NULL,
+            status VARCHAR(20) NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (order_id, product_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON analytics.order_items(order_id);
+        CREATE INDEX IF NOT EXISTS idx_order_items_product_id ON analytics.order_items(product_id);
+        CREATE INDEX IF NOT EXISTS idx_order_items_event_timestamp ON analytics.order_items(event_timestamp);
     """)
     conn.commit()
     
