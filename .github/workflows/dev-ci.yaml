@@ -140,7 +140,7 @@ jobs:
       - name: Commit and push overlay update
         if: steps.changes.outputs.services != ''
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GHCR_PAT }}
         run: |
           TAG="${{ github.sha }}"
           git config user.name "github-actions[bot]"
