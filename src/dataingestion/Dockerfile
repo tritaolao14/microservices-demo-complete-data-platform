@@ -34,6 +34,9 @@ FROM base
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
+# Install runtime dependency for psycopg2 (libpq.so.5)
+RUN apk add --no-cache libpq
+
 WORKDIR /dataingestion
 
 # Grab packages from builder
