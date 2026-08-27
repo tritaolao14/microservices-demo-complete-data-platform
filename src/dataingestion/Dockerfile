@@ -22,6 +22,9 @@ FROM base AS builder
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
+# Install build dependencies for psycopg2-binary
+RUN apk add --no-cache gcc musl-dev postgresql-dev
+
 # get packages
 COPY requirements.txt .
 RUN pip install -r requirements.txt
