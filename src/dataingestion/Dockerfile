@@ -35,7 +35,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 # Install runtime dependency for psycopg2 (libpq.so.5)
-# Rebuilt after GHCR_PAT fix
+# Rebuilt after GITHUB_TOKEN permissions fix
 RUN apk add --no-cache libpq
 
 WORKDIR /dataingestion
