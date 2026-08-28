@@ -122,6 +122,57 @@ class TestPostgresWriter:
         with pytest.raises(psycopg2.Error):
             writer.save((_sample_item(),))
 
+    def test_save_retries_then_succeeds(self, mock_connect, mock_exec):
+        mock_conn = MagicMock()
+        mock_connect.return_value = mock_conn
+        # first call raises OperationalError, second succeeds
+        mock_exec.side_effect = [psycopg2.OperationalError("conn lost"), None]
+
+        writer = PostgresWriter("postgresql://localhost/test", max_retries=3, backoff_ms=10)
+        with patch("infrastructure.postgres_writer.time.sleep"):
+            writer.save((_sample_item(),))
+
+        assert mock_exec.call_count == 2
+        mock_conn.commit.assert_called_once()
+
+    def test_save_retryable_exhausted_raises(self, mock_connect, mock_exec):
+        mock_conn = MagicMock()
+        mock_connect.return_value = mock_conn
+        mock_exec.side_effect = psycopg2.OperationalError("conn lost")
+
+        writer = PostgresWriter("postgresql://localhost/test", max_retries=1, backoff_ms=10)
+        with patch("infrastructure.postgres_writer.time.sleep"):
+            pytest.raises(psycopg2.OperationalError, writer.save, (_sample_item(),))
+
+        # attempt 0 (fail, retry) + attempt 1 (fail, exhausted) = 2
+        assert mock_exec.call_count == 2
+
+    def test_save_non_retryable_no_retry(self, mock_connect, mock_exec):
+        mock_conn = MagicMock()
+        mock_connect.return_value = mock_conn
+        mock_exec.side_effect = psycopg2.ProgrammingError("no table")
+
+        writer = PostgresWriter("postgresql://localhost/test", max_retries=3)
+        with pytest.raises(psycopg2.ProgrammingError):
+            writer.save((_sample_item(),))
+
+        mock_exec.assert_called_once()  # non-retryable must not retry
+
+    def test_save_reconnects_when_conn_closed(self, mock_connect, mock_exec):
+        mock_conn = MagicMock()
+        mock_conn.closed = True
+        mock_connect.return_value = mock_conn
+        # first attempt raises OperationalError, second (after reconnect) succeeds
+        mock_exec.side_effect = [psycopg2.OperationalError("conn lost"), None]
+
+        writer = PostgresWriter("postgresql://localhost/test", max_retries=3, backoff_ms=10)
+        with patch("infrastructure.postgres_writer.time.sleep"):
+            writer.save((_sample_item(),))
+
+        # reconnect() calls psycopg2.connect again
+        assert mock_connect.call_count >= 2
+        assert mock_exec.call_count == 2
+
     def test_close_connection(self, mock_connect, mock_exec):
         mock_conn = MagicMock()
         mock_conn.closed = False

@@ -2,6 +2,7 @@
 
 from decimal import Decimal
 
+import psycopg2
 import pytest
 from application.consumer_service import ConsumerService
 from domain.exceptions import InvalidOrderError
@@ -28,6 +29,8 @@ class FakeLogger:
     def __init__(self) -> None:
         self.infos: list[str] = []
         self.warnings: list[str] = []
+        self.errors: list[str] = []
+        self.exceptions: list[str] = []
 
     def info(self, msg: str, *args) -> None:
         self.infos.append(msg % args if args else msg)
@@ -35,15 +38,50 @@ class FakeLogger:
     def warning(self, msg: str, *args) -> None:
         self.warnings.append(msg % args if args else msg)
 
+    def error(self, msg: str, *args) -> None:
+        self.errors.append(msg % args if args else msg)
+
+    def exception(self, msg: str, *args) -> None:
+        self.errors.append(msg % args if args else msg)
+
 
 class FakeWriter:
     """Capture save() calls for assertions."""
 
-    def __init__(self) -> None:
+    def __init__(self, raise_on_save=None) -> None:
         self.saved: list[tuple[TransformedOrderItem, ...]] = []
+        self._raise_on_save = raise_on_save
 
     def save(self, items: tuple[TransformedOrderItem, ...]) -> None:
+        if self._raise_on_save:
+            raise self._raise_on_save
         self.saved.append(items)
+
+    def close(self) -> None:
+        pass
+
+
+class FakeRetryWriter:
+    """Capture retry send() calls for assertions."""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple] = []
+
+    def send(self, raw: dict, error: str, attempt: int) -> None:
+        self.sent.append((raw, error, attempt))
+
+    def close(self) -> None:
+        pass
+
+
+class FakeDlqWriter:
+    """Capture DLQ send() calls for assertions."""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple] = []
+
+    def send(self, raw: dict, error: str, attempt: int = 0) -> None:
+        self.sent.append((raw, error, attempt))
 
     def close(self) -> None:
         pass
@@ -83,7 +121,7 @@ class TestProcess:
     def test_process_valid_message(self):
         consumer = FakeConsumer([])
         deserializer = OrderDeserializer()
-        service = ConsumerService(consumer, deserializer, FakeWriter(), FakeLogger())
+        service = ConsumerService(consumer, deserializer, FakeWriter(), log=FakeLogger())
 
         result = service.process(_valid_message())
 
@@ -99,7 +137,7 @@ class TestProcess:
     def test_process_invalid_message_raises(self):
         consumer = FakeConsumer([])
         deserializer = OrderDeserializer()
-        service = ConsumerService(consumer, deserializer, FakeWriter(), FakeLogger())
+        service = ConsumerService(consumer, deserializer, FakeWriter(), log=FakeLogger())
 
         # Missing order_id -> InvalidOrderError
         raw = _valid_message(order_id="")
@@ -115,7 +153,7 @@ class TestRun:
         deserializer = OrderDeserializer()
         fake_log = FakeLogger()
         fake_writer = FakeWriter()
-        service = ConsumerService(consumer, deserializer, fake_writer, fake_log)
+        service = ConsumerService(consumer, deserializer, fake_writer, log=fake_log)
 
         service.run()
 
@@ -129,7 +167,7 @@ class TestRun:
         deserializer = OrderDeserializer()
         fake_log = FakeLogger()
         fake_writer = FakeWriter()
-        service = ConsumerService(consumer, deserializer, fake_writer, fake_log)
+        service = ConsumerService(consumer, deserializer, fake_writer, log=fake_log)
 
         service.run()  # should not raise
 
@@ -146,7 +184,7 @@ class TestRun:
         deserializer = OrderDeserializer()
         fake_log = FakeLogger()
         fake_writer = FakeWriter()
-        service = ConsumerService(consumer, deserializer, fake_writer, fake_log)
+        service = ConsumerService(consumer, deserializer, fake_writer, log=fake_log)
 
         service.run()
 
@@ -164,7 +202,7 @@ class TestRun:
         deserializer = OrderDeserializer()
         fake_log = FakeLogger()
         fake_writer = FakeWriter()
-        service = ConsumerService(consumer, deserializer, fake_writer, fake_log)
+        service = ConsumerService(consumer, deserializer, fake_writer, log=fake_log)
 
         service.run()
 
@@ -201,7 +239,7 @@ class TestRun:
         deserializer = OrderDeserializer()
         fake_log = FakeLogger()
         fake_writer = FakeWriter()
-        service = ConsumerService(consumer, deserializer, fake_writer, fake_log)
+        service = ConsumerService(consumer, deserializer, fake_writer, log=fake_log)
 
         service.run()
 
@@ -214,7 +252,7 @@ class TestRun:
         consumer = FakeConsumer(messages)
         deserializer = OrderDeserializer()
         fake_writer = FakeWriter()
-        service = ConsumerService(consumer, deserializer, fake_writer, FakeLogger())
+        service = ConsumerService(consumer, deserializer, fake_writer, log=FakeLogger())
 
         service.run()
 
@@ -227,7 +265,7 @@ class TestRun:
         consumer = FakeConsumer(messages)
         deserializer = OrderDeserializer()
         fake_writer = FakeWriter()
-        service = ConsumerService(consumer, deserializer, fake_writer, FakeLogger())
+        service = ConsumerService(consumer, deserializer, fake_writer, log=FakeLogger())
 
         service.run()
 
@@ -238,8 +276,121 @@ class TestRun:
         consumer = FakeConsumer(messages)
         deserializer = OrderDeserializer()
         fake_log = FakeLogger()
-        service = ConsumerService(consumer, deserializer, None, fake_log)
+        service = ConsumerService(consumer, deserializer, None, log=fake_log)
 
         service.run()  # should not raise
 
         assert len(fake_log.infos) == 1
+
+
+# --- retry / DLQ routing ---
+class TestRetryAndDlq:
+    def test_retryable_db_error_sends_to_retry_then_dlq(self):
+        messages = [_valid_message(order_id="uuid-retry")]
+        consumer = FakeConsumer(messages)
+        deserializer = OrderDeserializer()
+        fake_writer = FakeWriter(raise_on_save=psycopg2.OperationalError("down"))
+        fake_retry = FakeRetryWriter()
+        fake_dlq = FakeDlqWriter()
+        service = ConsumerService(
+            consumer,
+            deserializer,
+            fake_writer,
+            retry_writer=fake_retry,
+            dlq_writer=fake_dlq,
+            retry_max_attempt=1,
+            log=FakeLogger(),
+        )
+
+        service.run()
+
+        # attempt 0 < max(1) -> retry topic with attempt 1
+        assert len(fake_retry.sent) == 1
+        assert fake_retry.sent[0][2] == 1
+        assert "Retryable DB" in fake_retry.sent[0][1]
+        assert len(fake_dlq.sent) == 0
+
+    def test_retry_exhausted_sends_to_dlq(self):
+        # retry_max_attempt=0 + a retry envelope already at attempt 1 -> DLQ
+        messages = [{"original": _valid_message(order_id="uuid-retry"), "attempt": 1, "error": ""}]
+        consumer = FakeConsumer(messages)
+        deserializer = OrderDeserializer()
+        fake_writer = FakeWriter(raise_on_save=psycopg2.OperationalError("down"))
+        fake_retry = FakeRetryWriter()
+        fake_dlq = FakeDlqWriter()
+        service = ConsumerService(
+            consumer,
+            deserializer,
+            fake_writer,
+            retry_writer=fake_retry,
+            dlq_writer=fake_dlq,
+            retry_max_attempt=1,
+            log=FakeLogger(),
+        )
+
+        service.run()
+
+        assert len(fake_dlq.sent) == 1
+        assert fake_dlq.sent[0][0]["order_id"] == "uuid-retry"
+        assert "Retryable DB" in fake_dlq.sent[0][1]
+        assert len(fake_retry.sent) == 0
+
+    def test_invalid_order_sends_to_dlq(self):
+        messages = [_valid_message(order_id="")]
+        consumer = FakeConsumer(messages)
+        deserializer = OrderDeserializer()
+        fake_dlq = FakeDlqWriter()
+        service = ConsumerService(
+            consumer,
+            deserializer,
+            FakeWriter(),
+            dlq_writer=fake_dlq,
+            log=FakeLogger(),
+        )
+
+        service.run()
+
+        assert len(fake_dlq.sent) == 1
+        assert "InvalidOrder" in fake_dlq.sent[0][1]
+
+    def test_non_retryable_db_error_sends_to_dlq_directly(self):
+        messages = [_valid_message(order_id="uuid-poison")]
+        consumer = FakeConsumer(messages)
+        deserializer = OrderDeserializer()
+        fake_writer = FakeWriter(raise_on_save=psycopg2.ProgrammingError("no table"))
+        fake_retry = FakeRetryWriter()
+        fake_dlq = FakeDlqWriter()
+        service = ConsumerService(
+            consumer,
+            deserializer,
+            fake_writer,
+            retry_writer=fake_retry,
+            dlq_writer=fake_dlq,
+            log=FakeLogger(),
+        )
+
+        service.run()
+
+        assert len(fake_dlq.sent) == 1
+        assert "NonRetryable DB" in fake_dlq.sent[0][1]
+        assert len(fake_retry.sent) == 0
+
+    def test_success_does_not_dlq_or_retry(self):
+        messages = [_valid_message(order_id="uuid-ok")]
+        consumer = FakeConsumer(messages)
+        deserializer = OrderDeserializer()
+        fake_retry = FakeRetryWriter()
+        fake_dlq = FakeDlqWriter()
+        service = ConsumerService(
+            consumer,
+            deserializer,
+            FakeWriter(),
+            retry_writer=fake_retry,
+            dlq_writer=fake_dlq,
+            log=FakeLogger(),
+        )
+
+        service.run()
+
+        assert len(fake_retry.sent) == 0
+        assert len(fake_dlq.sent) == 0

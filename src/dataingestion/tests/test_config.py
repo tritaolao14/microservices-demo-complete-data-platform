@@ -22,6 +22,11 @@ class TestInfraConfigDefaults:
         assert cfg.kafka_consumer_group == "dataingestion"
         assert cfg.kafka_auto_offset_reset == "latest"
         assert cfg.postgres_dsn == "postgresql://boutique:boutique_pass@postgres:5432/product_catalog"
+        assert cfg.kafka_retry_topic == "orders_retry"
+        assert cfg.kafka_dlq_topic == "orders_dlq"
+        assert cfg.kafka_retry_max_attempt == 3
+        assert cfg.postgres_max_retries == 3
+        assert cfg.postgres_retry_backoff_ms == 5000
 
 class TestInfraConfigOverride:
     def test_override_broker(self, monkeypatch):
