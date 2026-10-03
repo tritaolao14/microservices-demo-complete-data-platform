@@ -37,7 +37,54 @@
     <!-- Keep in sync with the Kafka broker and Schema Registry images, which
          are both confluentinc/cp-*:7.6.1. -->
     <confluent.version>7.6.1</confluent.version>
+    <avro.version>1.11.4</avro.version>
+    <jackson.version>2.18.11</jackson.version>
+    <commons-lang3.version>3.18.0</commons-lang3.version>
   </properties>
+
+  <dependencyManagement>
+    <!-- Confluent 7.6.1 pins transitive versions that carry known
+         vulnerabilities. These are overridden rather than accepted because
+         the bundle lands in its own plugin directory with an isolated
+         classloader, so the newer versions cannot reach the rest of the
+         worker. Avro stays on the 1.11.x line Confluent tested against, and
+         is taken to the patch release that fixes CVE-2024-47561.
+
+         Re-check these on every Confluent upgrade; they exist to patch a
+         vendor pin, not to track latest. -->
+    <dependencies>
+      <dependency>
+        <groupId>org.apache.avro</groupId>
+        <artifactId>avro</artifactId>
+        <version>${avro.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-core</artifactId>
+        <version>${jackson.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>${jackson.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-annotations</artifactId>
+        <version>${jackson.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.dataformat</groupId>
+        <artifactId>jackson-dataformat-csv</artifactId>
+        <version>${jackson.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.commons</groupId>
+        <artifactId>commons-lang3</artifactId>
+        <version>${commons-lang3.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
 
   <repositories>
     <repository>
