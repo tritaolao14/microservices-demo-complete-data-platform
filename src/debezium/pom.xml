@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+ Copyright 2026 Google LLC
+
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.hipstershop</groupId>
+  <artifactId>debezium-avro-plugins</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+
+  <name>Debezium Avro plugin bundle</name>
+  <description>
+    Dependency resolution only. The Debezium Kafka Connect image ships no Avro
+    converter, so the Confluent Avro converter and its transitive dependencies
+    are resolved here and copied into the connector image's plugin path.
+    Nothing in this project is compiled.
+  </description>
+
+  <properties>
+    <!-- Keep in sync with the Kafka broker and Schema Registry images, which
+         are both confluentinc/cp-*:7.6.1. -->
+    <confluent.version>7.6.1</confluent.version>
+  </properties>
+
+  <repositories>
+    <repository>
+      <id>confluent</id>
+      <name>Confluent Maven repository</name>
+      <url>https://packages.confluent.io/maven/</url>
+    </repository>
+  </repositories>
+
+  <dependencies>
+    <!-- Brings the whole closure we need: kafka-avro-serializer,
+         kafka-schema-registry-client, kafka-connect-avro-data,
+         kafka-schema-serializer, kafka-schema-converter, common-config,
+         common-utils, plus org.apache.avro:avro, commons-compress and guava.
+         Listing those by hand is what the Debezium docs do and it is easy to
+         miss one. -->
+    <dependency>
+      <groupId>io.confluent</groupId>
+      <artifactId>kafka-connect-avro-converter</artifactId>
+      <version>${confluent.version}</version>
+      <exclusions>
+        <!-- kafka-clients arrives via kafka-schema-registry-client, but Kafka
+             Connect already provides it and hands objects such as
+             RecordBatch across the plugin classloader boundary. A second copy
+             inside the plugin directory causes ClassCastException at runtime.
+             Excluding it also drops zstd-jni, lz4-java and snappy-java, which
+             the Kafka runtime already ships. -->
+        <exclusion>
+          <groupId>org.apache.kafka</groupId>
+          <artifactId>kafka-clients</artifactId>
+        </exclusion>
+        <!-- Reaches us through org.apache.avro:avro. The runtime supplies
+             slf4j, and a second API jar risks two bindings on the plugin
+             classloader. -->
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-api</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+  </dependencies>
+
+</project>
