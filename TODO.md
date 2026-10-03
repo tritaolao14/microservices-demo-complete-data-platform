@@ -42,8 +42,8 @@ The project has a partial data platform implementation with foundational infrast
 **Goal**: Establish data warehouse and business intelligence capabilities
 
 #### Tasks:
-- [ ] Implement Debezium CDC for PostgreSQL
-  - [ ] Configure Debezium connector for product catalog changes
+- [x] Implement Debezium CDC for PostgreSQL
+  - [x] Configure Debezium connector for product catalog changes
   - [ ] Set up Kafka topic for database change events
 - [ ] Setup Data Warehouse
   - [ ] Configure Trino or ClickHouse for data querying
@@ -63,6 +63,11 @@ The project has a partial data platform implementation with foundational infrast
 - [ ] Expand Data Sources
   - [ ] Add additional microservice event sources
   - [ ] Implement data enrichment from external systems
+- [ ] Security
+  - [ ] Replace plain-text dev DB passwords with SealedSecret or External Secrets
+    - [ ] `POSTGRES_PASSWORD` in `kubernetes-manifests/postgresql.yaml`
+    - [ ] `debezium-db` Secret in `gitops/overlays/dev/debezium.yaml`
+    - [ ] Required before staging/production; plaintext in dev is a temporary exception
 - [ ] Documentation & Testing
   - [ ] Complete technical documentation
   - [ ] Write comprehensive test suite

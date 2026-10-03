@@ -1,0 +1,259 @@
+# Kafka Connect (Debezium) worker + PostgreSQL connector for the dev overlay.
+#
+# Captures row-level changes on public.products (WAL) and publishes them to
+# Kafka topic dbserver1.public.products. Pattern: CDC Replication
+# (Data Engineering Design Patterns, Ch.2) / TODO.md Sprint 2.
+#
+# Dev-only, like kafka-ui / pgadmin / loadgenerator: staging and production
+# overlays only include ../../base, so this does not reach them.
+#
+# Image is pinned to 2.7 because the broker is Apache Kafka 3.6
+# (confluentinc/cp-kafka:7.6.1); Debezium 2.7 ships Kafka Connect 3.7 clients.
+# The image has a linux/arm64 manifest, required by the kind node.
+#
+# Requires postgres to run with -c wal_level=logical (see
+# kubernetes-manifests/postgresql.yaml:32).
+
+# SECURITY EXCEPTION (temporary): the dev DB password is committed in plain
+# text here, which .agents/rules/security-governance.md forbids. It is
+# deliberate for now because this cluster is an ephemeral kind cluster
+# (scripts/ci-local.sh), where a committed SealedSecret cannot survive
+# `kind delete cluster` (the sealing key lives in the cluster). Replace with
+# SealedSecret or External Secrets, together with the plain-text
+# POSTGRES_PASSWORD in kubernetes-manifests/postgresql.yaml:37, before this
+# pattern is reused in staging or production. Tracked in TODO.md.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: debezium-db
+  labels:
+    app: debezium-connect
+type: Opaque
+stringData:
+  db_password: boutique_pass
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: debezium-connector-config
+  labels:
+    app: debezium-connect
+data:
+  productcatalog-postgres.json: |-
+    {
+      "name": "productcatalog-postgres",
+      "config": {
+        "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+        "tasks.max": "1",
+        "database.hostname": "postgres",
+        "database.port": "5432",
+        "database.user": "boutique",
+        "database.password": "__DB_PASSWORD__",
+        "database.dbname": "product_catalog",
+        "topic.prefix": "dbserver1",
+        "plugin.name": "pgoutput",
+        "slot.name": "debezium_productcatalog",
+        "publication.name": "debezium_productcatalog",
+        "publication.autocreate.mode": "filtered",
+        "table.include.list": "public.products",
+        "snapshot.mode": "initial",
+        "schema.history.internal.kafka.bootstrap.servers": "kafka:9092",
+        "schema.history.internal.kafka.topic": "_schema-changes.product_catalog",
+        "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "value.converter": "org.apache.kafka.connect.json.JsonConverter"
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: debezium-connect
+  labels:
+    app: debezium-connect
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: debezium-connect
+  template:
+    metadata:
+      labels:
+        app: debezium-connect
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      containers:
+      - name: debezium-connect
+        image: quay.io/debezium/connect:2.7.3.Final
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8083
+          name: rest
+        env:
+        - name: BOOTSTRAP_SERVERS
+          value: kafka:9092
+        - name: GROUP_ID
+          value: debezium-connect
+        - name: CONFIG_STORAGE_TOPIC
+          value: _debezium_connect_configs
+        - name: OFFSET_STORAGE_TOPIC
+          value: _debezium_connect_offsets
+        - name: STATUS_STORAGE_TOPIC
+          value: _debezium_connect_statuses
+        # The entrypoint only maps CONNECT_* env vars to worker properties
+        # (underscores become dots), so these need the CONNECT_ prefix.
+        - name: CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR
+          value: "1"
+        - name: CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR
+          value: "1"
+        - name: CONNECT_STATUS_STORAGE_REPLICATION_FACTOR
+          value: "1"
+        - name: KEY_CONVERTER
+          value: org.apache.kafka.connect.json.JsonConverter
+        - name: VALUE_CONVERTER
+          value: org.apache.kafka.connect.json.JsonConverter
+        - name: ADVERTISED_HOST_NAME
+          value: debezium-connect
+        - name: CONNECT_REST_ADVERTISED_HOST_NAME
+          value: debezium-connect
+        - name: CONNECT_REST_PORT
+          value: "8083"
+        - name: HEAP_OPTS
+          value: -Xms512m -Xmx512m
+        - name: LOG_LEVEL
+          value: info
+        volumeMounts:
+        - name: connector-config
+          mountPath: /kafka/config
+        - name: connector-data
+          mountPath: /kafka/data
+        - name: connector-logs
+          mountPath: /kafka/logs
+        readinessProbe:
+          httpGet:
+            path: /connectors
+            port: 8083
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8083
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        resources:
+          requests:
+            cpu: 250m
+            memory: 768Mi
+          limits:
+            cpu: "1"
+            memory: 1536Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+      volumes:
+      - name: connector-config
+        emptyDir: {}
+      - name: connector-data
+        emptyDir: {}
+      - name: connector-logs
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: debezium-connect
+  labels:
+    app: debezium-connect
+spec:
+  ports:
+  - port: 8083
+    targetPort: 8083
+    name: rest
+  selector:
+    app: debezium-connect
+---
+# Registers the connector through the Kafka Connect REST API. Kafka Connect
+# persists connector config in _debezium_connect_configs, so this Job only has
+# to succeed once; a re-run returns 409 and is treated as success.
+# The DB password lives in the debezium-db Secret and is injected into the
+# __DB_PASSWORD__ placeholder here, so no credential is stored in git.
+# Inspect with: kubectl -n onlineboutique-dev logs job/debezium-register
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: debezium-register
+  labels:
+    app: debezium-connect
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: debezium-register
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      containers:
+      - name: register
+        image: quay.io/debezium/connect:2.7.3.Final
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-ec"]
+        env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: debezium-db
+              key: db_password
+        args:
+        - |
+          until curl -fsS -o /dev/null http://debezium-connect:8083/connectors; do
+            echo "waiting for debezium-connect REST API ..."
+            sleep 5
+          done
+          TEMPLATE=$(cat /connectors/productcatalog-postgres.json)
+          PAYLOAD=${TEMPLATE/__DB_PASSWORD__/$DB_PASSWORD}
+          RESPONSE=$(curl -sS -w '\n%{http_code}' \
+            -X POST \
+            -H 'Content-Type: application/json' \
+            --data-binary "$PAYLOAD" \
+            http://debezium-connect:8083/connectors)
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
+          echo "HTTP $HTTP_CODE"
+          echo "$RESPONSE" | head -n -1
+          case "$HTTP_CODE" in
+            200|201|409) echo "connector productcatalog-postgres registered" ;;
+            *) echo "failed to register connector (HTTP $HTTP_CODE)"; exit 1 ;;
+          esac
+        volumeMounts:
+        - name: connector-config
+          mountPath: /connectors
+          readOnly: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 250m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+      volumes:
+      - name: connector-config
+        configMap:
+          name: debezium-connector-config
