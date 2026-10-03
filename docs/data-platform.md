@@ -36,6 +36,48 @@ Dự án hiện tại bao gồm các microservices phục vụ giao dịch trự
 -   Thay thế lưu trữ `products.json` tĩnh bằng PostgreSQL.
 -   Sử dụng **Debezium** kết nối tới PostgreSQL để tự động capture các lệnh `INSERT`/`UPDATE` trên bảng sản phẩm và bắn thẳng vào Kafka.
 
+#### Đã triển khai (DPFMD-31)
+
+Debezium chạy dưới dạng Kafka Connect worker, chỉ trong overlay dev
+(`gitops/overlays/dev/debezium.yaml`) để không ảnh hưởng staging/production:
+
+| Thành phần | Giá trị |
+| --- | --- |
+| Worker | `quay.io/debezium/connect:2.7.3.Final`, REST trên cổng `8083` |
+| Connector | `productcatalog-postgres` (`io.debezium.connector.postgresql.PostgresConnector`) |
+| Bảng nguồn | `public.products` (`table.include.list`) |
+| Plugin | `pgoutput`, snapshot `initial` |
+| Slot / publication | `debezium_productcatalog` / `debezium_productcatalog` (`publication.autocreate.mode=filtered`) |
+| Topic output | `dbserver1.public.products` (JSON converters) |
+| Đăng ký connector | `Job/debezium-register` gọi `POST /connectors` |
+
+Điểm vận hành đáng lưu ý:
+
+-   `postgresql.yaml` phải bật `wal_level=logical`, nếu không connector sẽ không
+    validate được.
+-   Password nằm trong `Secret/debezium-db`, không nằm trong `ConfigMap`.
+    `Job/debezium-register` thay placeholder `__DB_PASSWORD__` bằng giá trị từ
+    Secret trước khi POST. Kafka Connect **không** resolve `${file:...}` trong
+    connector config, nên không thể dùng `FileConfigProvider` cho `database.password`.
+-   ⚠️ `Secret/debezium-db` đang chứa password dạng plain text, và
+    `kubernetes-manifests/postgresql.yaml` cũng vậy. Đây là ngoại lệ tạm cho môi
+    trường dev: cluster `kind-ci-local` là ephemeral (`scripts/ci-local.sh`), nên
+    SealedSecret đã commit sẽ không decrypt được sau `kind delete cluster`.
+    Phải chuyển sang SealedSecret/External Secrets trước khi dùng lại pattern này
+    cho staging hay production. Xem TODO.md → Sprint 3 → Security.
+-   Connector đã đăng ký rồi thì Job chạy lại trả `409` và được coi là thành công.
+
+```bash
+# Trạng thái connector
+kubectl -n onlineboutique-dev exec deploy/debezium-connect -- \
+  curl -sS http://localhost:8083/connectors/productcatalog-postgres/status
+
+# Đọc event (offset cao nhất)
+kubectl -n onlineboutique-dev exec deploy/kafka -- \
+  kafka-console-consumer --bootstrap-server kafka:9092 \
+  --topic dbserver1.public.products --partition 0 --offset LAST --max-messages 1
+```
+
 ### Phase 3: Kho Dữ Liệu Trung Tâm (Data Warehouse / Lakehouse)
 *Mục tiêu: Lưu trữ dữ liệu tập trung phục vụ phân tích dài hạn.*
 

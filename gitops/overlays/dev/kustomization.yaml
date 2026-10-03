@@ -26,6 +26,7 @@ resources:
 - kafka-ui.yaml
 - pgadmin.yaml
 - loadgenerator.yaml
+- debezium.yaml
 images:
 - name: adservice
   newName: ghcr.io/tritaolao14/adservice
