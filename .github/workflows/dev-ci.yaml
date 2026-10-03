@@ -68,7 +68,7 @@ jobs:
           # Allowlist: only services with an image in the gitops overlay.
           # shoppingassistantservice, loadgenerator, data_processing are
           # excluded (not in gitops stack).
-          ALLOWLIST="adservice cartservice checkoutservice currencyservice dataingestion emailservice frontend paymentservice productcatalogservice recommendationservice shippingservice"
+          ALLOWLIST="adservice cartservice checkoutservice currencyservice debezium dataingestion emailservice frontend paymentservice productcatalogservice recommendationservice shippingservice"
 
           SERVICES=""
           for svc in $CHANGED; do

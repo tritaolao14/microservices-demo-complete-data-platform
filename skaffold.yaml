@@ -49,6 +49,12 @@ build:
     context: src/adservice
   - image: dataingestion
     context: src/dataingestion
+  # Debezium is only deployed from the dev overlay, but it needs to be built
+  # here so scripts/ci-local.sh can load it into a local kind cluster.
+  - image: debezium
+    context: src/debezium
+    docker:
+      dockerfile: Dockerfile
   tagPolicy:
     gitCommit: {}
   local:
