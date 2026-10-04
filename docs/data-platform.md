@@ -43,13 +43,13 @@ Debezium chạy dưới dạng Kafka Connect worker, chỉ trong overlay dev
 
 | Thành phần | Giá trị |
 | --- | --- |
-| Worker | `quay.io/debezium/connect:2.7.3.Final`, REST trên cổng `8083` |
+| Worker | Image riêng `ghcr.io/tritaolao14/debezium` (FROM `quay.io/debezium/connect:2.7.3.Final` + plugin Avro), REST trên cổng `8083` |
 | Connector | `productcatalog-postgres` (`io.debezium.connector.postgresql.PostgresConnector`) |
 | Bảng nguồn | `public.products` (`table.include.list`) |
 | Plugin | `pgoutput`, snapshot `initial` |
 | Slot / publication | `debezium_productcatalog` / `debezium_productcatalog` (`publication.autocreate.mode=filtered`) |
-| Topic output | `dbserver1.public.products` (JSON converters) |
-| Đăng ký connector | `Job/debezium-register` gọi `POST /connectors` |
+| Topic output | `cdc_product_changes` (Avro, 2 partitions) — xem DPFMD-32 |
+| Đăng ký connector | `Job/debezium-register` (reconcile, không chỉ POST một lần) — xem DPFMD-32 |
 
 Điểm vận hành đáng lưu ý:
 
@@ -57,7 +57,7 @@ Debezium chạy dưới dạng Kafka Connect worker, chỉ trong overlay dev
     validate được.
 -   Password nằm trong `Secret/debezium-db`, không nằm trong `ConfigMap`.
     `Job/debezium-register` thay placeholder `__DB_PASSWORD__` bằng giá trị từ
-    Secret trước khi POST. Kafka Connect **không** resolve `${file:...}` trong
+    Secret trước khi apply. Kafka Connect **không** resolve `${file:...}` trong
     connector config, nên không thể dùng `FileConfigProvider` cho `database.password`.
 -   ⚠️ `Secret/debezium-db` đang chứa password dạng plain text, và
     `kubernetes-manifests/postgresql.yaml` cũng vậy. Đây là ngoại lệ tạm cho môi
@@ -65,7 +65,9 @@ Debezium chạy dưới dạng Kafka Connect worker, chỉ trong overlay dev
     SealedSecret đã commit sẽ không decrypt được sau `kind delete cluster`.
     Phải chuyển sang SealedSecret/External Secrets trước khi dùng lại pattern này
     cho staging hay production. Xem TODO.md → Sprint 3 → Security.
--   Connector đã đăng ký rồi thì Job chạy lại trả `409` và được coi là thành công.
+-   Kafka Connect lưu config của connector trong topic `_debezium_connect_configs`
+    dạng **plain text**, nên `database.password` cũng nằm trong đó. Ngoại lệ tạm
+    cho dev, giống trên. Xem TODO.md → Sprint 3 → Security.
 
 ```bash
 # Trạng thái connector
@@ -75,7 +77,84 @@ kubectl -n onlineboutique-dev exec deploy/debezium-connect -- \
 # Đọc event (offset cao nhất)
 kubectl -n onlineboutique-dev exec deploy/kafka -- \
   kafka-console-consumer --bootstrap-server kafka:9092 \
-  --topic dbserver1.public.products --partition 0 --offset LAST --max-messages 1
+  --topic cdc_product_changes --partition 0 --offset LAST --max-messages 1
+```
+
+#### Đã triển khai (DPFMD-32)
+
+Chuẩn hoá output của CDC thành **Avro** trên topic cố định
+`cdc_product_changes`, và sửa `Job/debezium-register` để thực sự *reconcile*
+config thay vì chỉ đăng ký một lần.
+
+| Thành phần | Giá trị |
+| --- | --- |
+| Topic | `cdc_product_changes`, 2 partitions, replication factor 1 (`Job/kafka-create-topic`) |
+| Định tuyến | SMT `RegexRouter`: `dbserver1\.public\.products` → `cdc_product_changes` |
+| Serializer | `io.confluent.connect.avro.AvroConverter` cho cả key và value |
+| Schema Registry | `Deployment/schema-registry` (`confluentinc/cp-schema-registry:7.6.1`), `http://schema-registry:8081` |
+| Schema history | Vẫn dùng JSON converter (`internal.*.converter`), nên topic `_schema-changes.product_catalog` không đổi format |
+| Plugin Avro | Đóng gói trong image riêng `src/debezium` (`kafka-connect-avro-converter:7.6.1`) |
+| Reconcile | `Job/debezium-register`: đọc config thật, PUT nếu lệch, chờ `RUNNING`, verify lại |
+
+Vì sao cần `RegexRouter`: Debezium tự đặt tên topic theo
+`<topic.prefix>.<schema>.<table>`, tức `dbserver1.public.products`. `topic.routing`
+**không** phải property của Debezium (đó là connector option của Kafka Connect
+framework, không có trong `PostgresConnector`), nên phải dùng SMT `RegexRouter`
+để ép tên topic. Giữ `topic.prefix=dbserver1` vì connector vẫn cần prefix này
+cho schema history và tên schema.
+
+Về Avro trên wire: Confluent dùng **magic 1 byte + schema id 4 byte** big-endian
+(`00` + `00 00 00 02`), không phải 5 byte như header Avro gốc. Đọc record để kiểm
+tra phải dùng đúng độ dài này.
+
+`Job/debezium-register` viết bằng Python (image không có `jq`) và theo thứ tự:
+
+1.  Chờ REST API của worker sẵn sàng.
+2.  Đọc config đang chạy thật qua `GET /connectors/<name>/config`.
+3.  Nếu connector chưa có → `POST /connectors`.
+4.  Nếu có mà lệch với git → `PUT /connectors/<name>/config`.
+5.  Chờ `connector.state` và **task** đều `RUNNING`.
+6.  Đọc lại config và fail nếu vẫn còn lệch.
+
+Hai điểm cố ý:
+
+-   **Chỉ PUT khi thật sự lệch.** `PUT` luôn restart task, kể cả khi config không
+    đổi. Vì ArgoCD chạy lại Job này (`ttlSecondsAfterFinished` hết hạn Job đã xong
+    → ArgoCD tạo lại), nếu PUT vô điều kiện thì task restart ~144 lần/ngày.
+-   **Chỉ so sánh các key có trong git.** `GET /config` của Kafka Connect trả
+    thêm `name` và có thể thêm default của phiên bản sau; đó không phải drift.
+    Giá trị `database.password` được so sánh nhưng không bao giờ in ra log.
+
+Job này cũng chính là "monitoring" của pipeline: drift giờ làm Job fail thay vì
+bị bỏ qua âm thầm. Trước DPFMD-32, Job chỉ `POST` và coi `409` là thành công, nên
+mọi thay đổi config trong git bị bỏ qua nếu connector đã tồn tại.
+
+Ba điểm vận hành của image `cp-schema-registry:7.6.1`, đều đã tốn thời gian
+debug và đều có comment trong manifest:
+
+-   Phải đặt `enableServiceLinks: false`. Nếu không, kubelet inject env
+    `SCHEMA_REGISTRY_PORT` từ Service `schema-registry`, và
+    `/etc/confluent/docker/configure` coi đó là biến `PORT` deprecated rồi
+    `exit 1`. `kubernetes-manifests/kafka.yaml` đã bật cờ này với lý do tương tự.
+-   Cần `runAsUser: 1000` (`appuser`) **và** `fsGroup: 994` (`confluent`).
+    `/etc/schema-registry` là `775 appuser:root` nên entrypoint bắt buộc uid 1000,
+    còn `/var/log/confluent` là `770 cp-schema-registry:confluent` và log4j ghi
+    file vào đó. Không user nào đơn lẻ đáp ứng cả hai, nên thêm group thay vì
+    chạy bằng root.
+-   Job phải tự khai báo `imagePullSecrets`, vì patch `imagePullSecrets` của overlay
+    chỉ target `kind: Deployment`, không áp cho `kind: Job`.
+
+Ngoại lệ bảo mật tạm cho dev: Schema Registry không có authentication (chỉ gắn
+ClusterIP, không expose ra ngoài cluster). Phải thêm auth và network policy trước
+khi dùng lại pattern cho staging/production. Xem TODO.md → Sprint 3 → Security.
+
+```bash
+# Schema Registry: các subject đã đăng ký
+kubectl -n onlineboutique-dev exec deploy/schema-registry -- \
+  curl -sS http://localhost:8081/subjects
+
+# Log reconcile (phát hiện drift, apply, verify)
+kubectl -n onlineboutique-dev logs job/debezium-register
 ```
 
 ### Phase 3: Kho Dữ Liệu Trung Tâm (Data Warehouse / Lakehouse)
