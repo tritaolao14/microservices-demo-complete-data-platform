@@ -27,6 +27,7 @@ resources:
 - pgadmin.yaml
 - loadgenerator.yaml
 - debezium.yaml
+- schema-registry.yaml
 images:
 - name: adservice
   newName: ghcr.io/tritaolao14/adservice
@@ -43,6 +44,9 @@ images:
 - name: dataingestion
   newName: ghcr.io/tritaolao14/dataingestion
   newTag: 45483a962448f4a5fc8655ee4c5d16f99ede3755
+- name: debezium
+  newName: ghcr.io/tritaolao14/debezium
+  newTag: ff1cf78ca35a9831e40be67186c7971822389575
 - name: emailservice
   newName: ghcr.io/tritaolao14/emailservice
   newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd

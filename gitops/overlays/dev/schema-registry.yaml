@@ -1,0 +1,222 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Confluent Schema Registry plus explicit creation of the CDC topic.
+#
+# The registry is what lets the Debezium connector in debezium.yaml serialise
+# product changes as Avro: the converter registers the product schema under
+# cdc_product_changes-value and every record carries the returned schema id.
+# Without it the converter cannot serialise anything, which is why this
+# resource is a hard dependency of the connector rather than an optional extra.
+#
+# The registry keeps schemas in a Kafka topic (_schemas, see kafkastore), so
+# no database is needed. Pinning 7.6.1 matches the broker in
+# kubernetes-manifests/kafka.yaml and the Avro converter baked into the
+# debezium image (src/debezium/pom.xml).
+#
+# SECURITY EXCEPTION (temporary): the registry runs without authentication,
+# so anyone who can reach port 8081 in this namespace can read or write
+# schemas. It is bound to a ClusterIP Service on purpose, so it is not exposed
+# outside the cluster, and this is an ephemeral kind cluster
+# (scripts/ci-local.sh). Add auth plus a network policy before this pattern is
+# reused in staging or production. Tracked in TODO.md.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: schema-registry
+  labels:
+    app: schema-registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: schema-registry
+  template:
+    metadata:
+      labels:
+        app: schema-registry
+    spec:
+      # Required, and the same reason kubernetes-manifests/kafka.yaml sets it.
+      # With service links enabled the kubelet injects an env var for every
+      # Service in the namespace, including SCHEMA_REGISTRY_PORT for our own
+      # schema-registry Service. The entrypoint treats SCHEMA_REGISTRY_PORT as
+      # the deprecated PORT setting and exits 1 with
+      # "PORT is deprecated. Please use SCHEMA_REGISTRY_LISTENERS instead.",
+      # so the registry can never start next to its own Service.
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        # This image needs two different privileges that no single uid has, so
+        # both are granted instead of running as root:
+        #   /etc/schema-registry is drwxrwxr-x appuser:root, and the entrypoint
+        #     check "dub path /etc/schema-registry/ writable" makes it abort
+        #     unless the container runs as uid 1000 (appuser);
+        #   /var/log/confluent is drwxrwx--- cp-schema-registry:confluent
+        #     (997:994) and log4j has a RollingFileAppender writing into it, so
+        #     uid 1000 needs to be in group confluent.
+        # fsGroup adds gid 994 as a supplementary group, which covers the second
+        # case while keeping the image's own user.
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 994
+      containers:
+      - name: schema-registry
+        image: confluentinc/cp-schema-registry:7.6.1
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8081
+          name: http
+        env:
+        # Must match the Service name, because this value is advertised to
+        # clients as part of the registry URL it hands out.
+        - name: SCHEMA_REGISTRY_HOST_NAME
+          value: schema-registry
+        - name: SCHEMA_REGISTRY_LISTENERS
+          value: http://0.0.0.0:8081
+        - name: SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS
+          value: PLAINTEXT://kafka:9092
+        - name: SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR
+          value: "1"
+        # Single broker, so the default of 3 would leave the _schemas topic
+        # under-replicated and the registry would not become healthy.
+        - name: SCHEMA_REGISTRY_KAFKASTORE_TOPIC_MIN_ISR
+          value: "1"
+        - name: SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL
+          value: none
+        readinessProbe:
+          httpGet:
+            path: /subjects
+            port: 8081
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /subjects
+            port: 8081
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: schema-registry
+  labels:
+    app: schema-registry
+spec:
+  ports:
+  - port: 8081
+    targetPort: 8081
+    name: http
+  selector:
+    app: schema-registry
+---
+# Creates the CDC topic with the partition count the task requires.
+#
+# The broker has auto.create.topics.enable=true, but an auto-created topic
+# gets broker.num.partitions (1) partitions, which would silently violate the
+# 2-partition requirement. Creating it explicitly is the only way to control
+# the partition count, and --if-not-exists makes this safe to re-run.
+#
+# Inspect with: kubectl -n onlineboutique-dev logs job/kafka-create-topic
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-create-topic
+  labels:
+    app: kafka-topic-init
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: kafka-topic-init
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+      - name: create-topic
+        image: confluentinc/cp-kafka:7.6.1
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-ec"]
+        env:
+        # Same configurable-name pattern as dataingestion's KAFKA_RETRY_TOPIC,
+        # so changing the topic does not require editing this manifest.
+        - name: CDC_TOPIC
+          value: cdc_product_changes
+        - name: CDC_PARTITIONS
+          value: "2"
+        - name: CDC_REPLICATION_FACTOR
+          value: "1"
+        args:
+        - |
+          echo "waiting for broker kafka:9092 ..."
+          until kafka-broker-api-versions --bootstrap-server kafka:9092 >/dev/null 2>&1; do
+            sleep 5
+          done
+
+          kafka-topics --bootstrap-server kafka:9092 \
+            --create --if-not-exists \
+            --topic "$CDC_TOPIC" \
+            --partitions "$CDC_PARTITIONS" \
+            --replication-factor "$CDC_REPLICATION_FACTOR"
+
+          # Verify rather than trusting the exit code: --if-not-exists also
+          # succeeds when the topic already exists with the wrong shape.
+          DESCRIBE=$(kafka-topics --bootstrap-server kafka:9092 \
+            --describe --topic "$CDC_TOPIC")
+          echo "$DESCRIBE"
+
+          ACTUAL_PARTITIONS=$(echo "$DESCRIBE" | sed -n 's/.*PartitionCount: \([0-9]*\).*/\1/p')
+          if [ "$ACTUAL_PARTITIONS" != "$CDC_PARTITIONS" ]; then
+            echo "ERROR: $CDC_TOPIC has $ACTUAL_PARTITIONS partitions, expected $CDC_PARTITIONS"
+            exit 1
+          fi
+          echo "topic $CDC_TOPIC ready with $ACTUAL_PARTITIONS partitions"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 250m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - name: topic-tmp
+          mountPath: /tmp
+      volumes:
+      - name: topic-tmp
+        emptyDir: {}

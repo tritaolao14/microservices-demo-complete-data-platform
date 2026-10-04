@@ -1,15 +1,29 @@
 # Kafka Connect (Debezium) worker + PostgreSQL connector for the dev overlay.
 #
-# Captures row-level changes on public.products (WAL) and publishes them to
-# Kafka topic dbserver1.public.products. Pattern: CDC Replication
+# Captures row-level changes on public.products (WAL) and publishes them as
+# Avro to Kafka topic cdc_product_changes. Pattern: CDC Replication
 # (Data Engineering Design Patterns, Ch.2) / TODO.md Sprint 2.
+#
+# Debezium derives the change topic name as <topic.prefix>.<schema>.<table>,
+# which here would be dbserver1.public.products. A RegexRouter single-message
+# transform rewrites that to cdc_product_changes so the topic name stays
+# stable and is the one documented for downstream consumers.
+#
+# Avro needs the Confluent converter plugin and a Schema Registry to register
+# the product schema in, so this manifest depends on schema-registry.yaml
+# (Deployment schema-registry, port 8081). Without it the connector task fails
+# to start, because AvroConverter cannot serialise without a registry.
 #
 # Dev-only, like kafka-ui / pgadmin / loadgenerator: staging and production
 # overlays only include ../../base, so this does not reach them.
 #
-# Image is pinned to 2.7 because the broker is Apache Kafka 3.6
-# (confluentinc/cp-kafka:7.6.1); Debezium 2.7 ships Kafka Connect 3.7 clients.
-# The image has a linux/arm64 manifest, required by the kind node.
+# Image is our own debezium image (src/debezium/Dockerfile) because the
+# upstream image has no Avro converter plugin. It is built FROM
+# quay.io/debezium/connect:2.7.3.Final, so the worker itself is unchanged, and
+# the tag is rewritten by the dev-ci workflow through gitops/overlays/dev/
+# kustomization.yaml. The 2.7 base is required because the broker is Apache
+# Kafka 3.6 (confluentinc/cp-kafka:7.6.1) while Debezium 2.7 ships Kafka
+# Connect 3.7 clients.
 #
 # Requires postgres to run with -c wal_level=logical (see
 # kubernetes-manifests/postgresql.yaml:32).
@@ -59,8 +73,16 @@ data:
         "snapshot.mode": "initial",
         "schema.history.internal.kafka.bootstrap.servers": "kafka:9092",
         "schema.history.internal.kafka.topic": "_schema-changes.product_catalog",
-        "key.converter": "org.apache.kafka.connect.json.JsonConverter",
-        "value.converter": "org.apache.kafka.connect.json.JsonConverter"
+        "key.converter": "io.confluent.connect.avro.AvroConverter",
+        "key.converter.schema.registry.url": "http://schema-registry:8081",
+        "value.converter": "io.confluent.connect.avro.AvroConverter",
+        "value.converter.schema.registry.url": "http://schema-registry:8081",
+        "internal.key.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "internal.value.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "transforms": "route",
+        "transforms.route.type": "org.apache.kafka.connect.transforms.RegexRouter",
+        "transforms.route.regex": "dbserver1\\.public\\.products",
+        "transforms.route.replacement": "cdc_product_changes"
       }
     }
 ---
@@ -87,7 +109,7 @@ spec:
         fsGroup: 1001
       containers:
       - name: debezium-connect
-        image: quay.io/debezium/connect:2.7.3.Final
+        image: debezium
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8083
@@ -179,11 +201,31 @@ spec:
   selector:
     app: debezium-connect
 ---
-# Registers the connector through the Kafka Connect REST API. Kafka Connect
-# persists connector config in _debezium_connect_configs, so this Job only has
-# to succeed once; a re-run returns 409 and is treated as success.
+# Reconciles the connector against the config in git.
+#
+# Kafka Connect persists connector config in _debezium_connect_configs, so the
+# worker keeps running with whatever config was applied last, even when git has
+# moved on. The previous version of this Job only ever POSTed and treated 409
+# (already exists) as success, which meant a changed config in git was silently
+# ignored. This Job instead:
+#   1. reads the live config from the worker,
+#   2. registers the connector if it is missing,
+#   3. applies the git config with PUT /config only when they disagree,
+#   4. waits for the connector and its task to report RUNNING,
+#   5. fails if the live config still differs afterwards.
+#
+# Step 3 is conditional on purpose: PUT restarts the connector task even when
+# the config is identical, and ArgoCD re-runs this Job (ttlSecondsAfterFinished
+# expires the finished Job, ArgoCD recreates it), so an unconditional PUT would
+# restart the task roughly every ten minutes for no reason.
+#
+# It also fails loudly, so drift shows up as a failed Job instead of silently
+# persisting. That is the only monitoring added for this pipeline.
+#
 # The DB password lives in the debezium-db Secret and is injected into the
-# __DB_PASSWORD__ placeholder here, so no credential is stored in git.
+# __DB_PASSWORD__ placeholder, so no credential is stored in git. Password
+# values are compared but never printed.
+#
 # Inspect with: kubectl -n onlineboutique-dev logs job/debezium-register
 apiVersion: batch/v1
 kind: Job
@@ -200,6 +242,10 @@ spec:
         app: debezium-register
     spec:
       restartPolicy: OnFailure
+      # The overlay patch that adds ghcr-secret only targets Deployments, so
+      # this Job pulls our private debezium image explicitly.
+      imagePullSecrets:
+      - name: ghcr-secret
       securityContext:
         runAsNonRoot: true
         runAsUser: 1001
@@ -207,39 +253,162 @@ spec:
         fsGroup: 1001
       containers:
       - name: register
-        image: quay.io/debezium/connect:2.7.3.Final
+        image: debezium
         imagePullPolicy: IfNotPresent
-        command: ["/bin/sh", "-ec"]
+        # Python rather than shell: the config comparison is real JSON work,
+        # and the image has no jq.
+        command: ["python3", "-c"]
         env:
         - name: DB_PASSWORD
           valueFrom:
             secretKeyRef:
               name: debezium-db
               key: db_password
+        - name: CONNECT_URL
+          value: http://debezium-connect:8083
+        - name: CONNECTOR_NAME
+          value: productcatalog-postgres
+        - name: CONFIG_FILE
+          value: /connectors/productcatalog-postgres.json
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: PYTHONDONTWRITEBYTECODE
+          value: "1"
         args:
         - |
-          until curl -fsS -o /dev/null http://debezium-connect:8083/connectors; do
-            echo "waiting for debezium-connect REST API ..."
-            sleep 5
-          done
-          TEMPLATE=$(cat /connectors/productcatalog-postgres.json)
-          PAYLOAD=${TEMPLATE/__DB_PASSWORD__/$DB_PASSWORD}
-          RESPONSE=$(curl -sS -w '\n%{http_code}' \
-            -X POST \
-            -H 'Content-Type: application/json' \
-            --data-binary "$PAYLOAD" \
-            http://debezium-connect:8083/connectors)
-          HTTP_CODE=$(echo "$RESPONSE" | tail -n 1)
-          echo "HTTP $HTTP_CODE"
-          echo "$RESPONSE" | head -n -1
-          case "$HTTP_CODE" in
-            200|201|409) echo "connector productcatalog-postgres registered" ;;
-            *) echo "failed to register connector (HTTP $HTTP_CODE)"; exit 1 ;;
-          esac
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          CONNECT_URL = os.environ["CONNECT_URL"]
+          CONNECTOR = os.environ["CONNECTOR_NAME"]
+          CONFIG_FILE = os.environ["CONFIG_FILE"]
+          PASSWORD_KEY = "database.password"
+          TIMEOUT_SECONDS = 300
+
+          def request(method, path, payload=None):
+              """Return (status, body). HTTP errors are values, not exceptions,
+              because 404 is a normal branch here."""
+              data = json.dumps(payload).encode() if payload is not None else None
+              req = urllib.request.Request(
+                  CONNECT_URL + path, data=data, method=method,
+                  headers={"Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      body = response.read()
+                      return response.status, (json.loads(body) if body else None)
+              except urllib.error.HTTPError as exc:
+                  body = exc.read()
+                  try:
+                      return exc.code, (json.loads(body) if body else None)
+                  except ValueError:
+                      return exc.code, None
+
+          def fail(message):
+              print("ERROR: " + message)
+              sys.exit(1)
+
+          def show(key, value):
+              """Never print a secret, not even from a live response."""
+              return "<redacted>" if key == PASSWORD_KEY else repr(value)
+
+          def drift(desired, live):
+              """Keys where the worker disagrees with git.
+
+              Only keys present in git are compared. Kafka Connect returns its
+              own properties (the echoed connector name, and any default it
+              chooses to materialise in future versions) which are not drift.
+              """
+              return {key: value for key, value in desired.items()
+                      if key != "name" and live.get(key) != value}
+
+          def report(label, keys, desired, live):
+              print("%s %d key(s): %s" % (label, len(keys), ", ".join(sorted(keys))))
+              for key in sorted(keys):
+                  print("  %s: git=%s live=%s"
+                        % (key, show(key, desired.get(key)), show(key, live.get(key))))
+
+          # Wait for the REST API. The connector cannot be applied before the
+          # worker is up, and this Job may start before the Deployment is ready.
+          print("waiting for the Kafka Connect REST API at %s ..." % CONNECT_URL)
+          deadline = time.time() + TIMEOUT_SECONDS
+          while True:
+              try:
+                  if request("GET", "/connectors")[0] == 200:
+                      break
+              except Exception as exc:  # connection refused while starting
+                  last_error = exc
+              if time.time() > deadline:
+                  fail("REST API never became reachable (%s)" % last_error)
+              time.sleep(5)
+
+          with open(CONFIG_FILE) as handle:
+              desired = json.load(handle)["config"]
+          desired[PASSWORD_KEY] = os.environ["DB_PASSWORD"]
+
+          status, live = request("GET", "/connectors/%s/config" % CONNECTOR)
+          if status == 404:
+              status, body = request("POST", "/connectors",
+                                     {"name": CONNECTOR, "config": desired})
+              if status not in (200, 201):
+                  fail("could not register %s (HTTP %s: %s)" % (CONNECTOR, status, body))
+              print("%s was missing from the worker and has been registered" % CONNECTOR)
+          elif status != 200:
+              fail("could not read the config of %s (HTTP %s: %s)" % (CONNECTOR, status, live))
+          else:
+              keys = drift(desired, live)
+              if not keys:
+                  print("live config already matches git for all %d keys, left untouched"
+                        % len(desired))
+              else:
+                  report("drift found in", keys, desired, live)
+                  status, body = request("PUT", "/connectors/%s/config" % CONNECTOR, desired)
+                  if status not in (200, 201):
+                      fail("could not apply the config (HTTP %s: %s)" % (status, body))
+                  print("git config applied with PUT /config")
+
+          # Confirm the connector actually runs. A bad converter or an
+          # unreachable Schema Registry fails the task here, not silently.
+          print("waiting for the connector to report RUNNING ...")
+          deadline = time.time() + TIMEOUT_SECONDS
+          while True:
+              status, body = request("GET", "/connectors/%s/status" % CONNECTOR)
+              if status != 200:
+                  fail("could not read the status of %s (HTTP %s: %s)" % (CONNECTOR, status, body))
+              connector_state = body.get("connector", {}).get("state")
+              tasks = [task.get("state") for task in body.get("tasks", [])]
+              if connector_state == "FAILED" or "FAILED" in tasks:
+                  for task in body.get("tasks", []):
+                      for line in (task.get("trace") or "").splitlines():
+                          print(line)
+                  fail("connector reported FAILED")
+              if connector_state == "RUNNING" and tasks and all(s == "RUNNING" for s in tasks):
+                  print("connector and task are RUNNING")
+                  break
+              if time.time() > deadline:
+                  fail("timed out waiting for RUNNING (connector=%s tasks=%s)"
+                       % (connector_state, tasks))
+              time.sleep(5)
+
+          # Re-read the config, because the point of this Job is to prove the
+          # worker matches git rather than to assume the PUT did it.
+          status, live = request("GET", "/connectors/%s/config" % CONNECTOR)
+          if status != 200:
+              fail("could not re-read the config of %s (HTTP %s)" % (CONNECTOR, status))
+          keys = drift(desired, live)
+          if keys:
+              report("ERROR: config still differs in", keys, desired, live)
+              sys.exit(1)
+          print("verified: the live config of %s matches git" % CONNECTOR)
         volumeMounts:
         - name: connector-config
           mountPath: /connectors
           readOnly: true
+        - name: job-tmp
+          mountPath: /tmp
         resources:
           requests:
             cpu: 50m
@@ -257,3 +426,5 @@ spec:
       - name: connector-config
         configMap:
           name: debezium-connector-config
+      - name: job-tmp
+        emptyDir: {}

@@ -44,7 +44,13 @@ The project has a partial data platform implementation with foundational infrast
 #### Tasks:
 - [x] Implement Debezium CDC for PostgreSQL
   - [x] Configure Debezium connector for product catalog changes
-  - [ ] Set up Kafka topic for database change events
+  - [x] Set up Kafka topic for database change events
+    - Topic `cdc_product_changes`, 2 partitions, định tuyến bằng SMT `RegexRouter`
+  - [x] Serialise CDC output as Avro with Schema Registry
+    - Confluent Avro converter đóng gói trong image riêng `src/debezium`
+    - `confluentinc/cp-schema-registry` chỉ trong overlay dev
+  - [x] Make the register Job reconcile config instead of POST-only
+    - Trước đây Job coi `409` là thành công nên thay đổi config trong git bị bỏ qua
 - [ ] Setup Data Warehouse
   - [ ] Configure Trino or ClickHouse for data querying
   - [ ] Set up dbt for data transformation
@@ -68,6 +74,14 @@ The project has a partial data platform implementation with foundational infrast
     - [ ] `POSTGRES_PASSWORD` in `kubernetes-manifests/postgresql.yaml`
     - [ ] `debezium-db` Secret in `gitops/overlays/dev/debezium.yaml`
     - [ ] Required before staging/production; plaintext in dev is a temporary exception
+  - [ ] Stop storing the connector config in plain text
+    - [ ] Kafka Connect keeps the whole connector config, including `database.password`,
+          in the `_debezium_connect_configs` topic
+    - [ ] Encrypt the config topic or move the password to a credential provider
+  - [ ] Add authentication to Schema Registry
+    - [ ] `confluentinc/cp-schema-registry` in `gitops/overlays/dev/schema-registry.yaml`
+          currently has no auth; it is ClusterIP-only so it is not exposed outside the cluster
+    - [ ] Add auth plus a NetworkPolicy before staging/production
 - [ ] Documentation & Testing
   - [ ] Complete technical documentation
   - [ ] Write comprehensive test suite
