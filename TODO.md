@@ -51,6 +51,11 @@ The project has a partial data platform implementation with foundational infrast
     - `confluentinc/cp-schema-registry` chỉ trong overlay dev
   - [x] Make the register Job reconcile config instead of POST-only
     - Trước đây Job coi `409` là thành công nên thay đổi config trong git bị bỏ qua
+  - [x] Capture `analytics.order_items` — bảng traffic thật, thay cho `public.products`
+    - Connector `orderitems-postgres`, topic `cdc_order_items` (4 partitions), Avro
+    - `Job/debezium-register` và `Job/kafka-create-topic` giờ xử lý nhiều connector/topic
+    - Bắt buộc mỗi connector một `topic.prefix` khác nhau, nếu không JMX MBean trùng
+      làm task `RUNNING` nhưng slot không active và không có event
 - [ ] Setup Data Warehouse
   - [ ] Configure Trino or ClickHouse for data querying
   - [ ] Set up dbt for data transformation

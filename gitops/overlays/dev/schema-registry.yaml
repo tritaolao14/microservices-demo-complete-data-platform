@@ -134,12 +134,15 @@ spec:
   selector:
     app: schema-registry
 ---
-# Creates the CDC topic with the partition count the task requires.
+# Creates the CDC topics with the partition count each one requires.
 #
 # The broker has auto.create.topics.enable=true, but an auto-created topic
 # gets broker.num.partitions (1) partitions, which would silently violate the
-# 2-partition requirement. Creating it explicitly is the only way to control
+# partition requirement. Creating them explicitly is the only way to control
 # the partition count, and --if-not-exists makes this safe to re-run.
+#
+# Format is "<topic>:<partitions>" per entry, so adding a connector means
+# adding one entry here rather than a new Job.
 #
 # Inspect with: kubectl -n onlineboutique-dev logs job/kafka-create-topic
 apiVersion: batch/v1
@@ -169,11 +172,9 @@ spec:
         command: ["/bin/sh", "-ec"]
         env:
         # Same configurable-name pattern as dataingestion's KAFKA_RETRY_TOPIC,
-        # so changing the topic does not require editing this manifest.
-        - name: CDC_TOPIC
-          value: cdc_product_changes
-        - name: CDC_PARTITIONS
-          value: "2"
+        # so changing a topic does not require editing this script.
+        - name: CDC_TOPICS
+          value: "cdc_product_changes:2 cdc_order_items:4"
         - name: CDC_REPLICATION_FACTOR
           value: "1"
         args:
@@ -183,24 +184,30 @@ spec:
             sleep 5
           done
 
-          kafka-topics --bootstrap-server kafka:9092 \
-            --create --if-not-exists \
-            --topic "$CDC_TOPIC" \
-            --partitions "$CDC_PARTITIONS" \
-            --replication-factor "$CDC_REPLICATION_FACTOR"
+          for ENTRY in $CDC_TOPICS; do
+            TOPIC=${ENTRY%:*}
+            PARTITIONS=${ENTRY##*:}
+            echo "--- ensuring $TOPIC with $PARTITIONS partitions"
 
-          # Verify rather than trusting the exit code: --if-not-exists also
-          # succeeds when the topic already exists with the wrong shape.
-          DESCRIBE=$(kafka-topics --bootstrap-server kafka:9092 \
-            --describe --topic "$CDC_TOPIC")
-          echo "$DESCRIBE"
+            kafka-topics --bootstrap-server kafka:9092 \
+              --create --if-not-exists \
+              --topic "$TOPIC" \
+              --partitions "$PARTITIONS" \
+              --replication-factor "$CDC_REPLICATION_FACTOR"
 
-          ACTUAL_PARTITIONS=$(echo "$DESCRIBE" | sed -n 's/.*PartitionCount: \([0-9]*\).*/\1/p')
-          if [ "$ACTUAL_PARTITIONS" != "$CDC_PARTITIONS" ]; then
-            echo "ERROR: $CDC_TOPIC has $ACTUAL_PARTITIONS partitions, expected $CDC_PARTITIONS"
-            exit 1
-          fi
-          echo "topic $CDC_TOPIC ready with $ACTUAL_PARTITIONS partitions"
+            # Verify rather than trusting the exit code: --if-not-exists also
+            # succeeds when the topic already exists with the wrong shape.
+            DESCRIBE=$(kafka-topics --bootstrap-server kafka:9092 \
+              --describe --topic "$TOPIC")
+            echo "$DESCRIBE"
+
+            ACTUAL_PARTITIONS=$(echo "$DESCRIBE" | sed -n 's/.*PartitionCount: \([0-9]*\).*/\1/p')
+            if [ "$ACTUAL_PARTITIONS" != "$PARTITIONS" ]; then
+              echo "ERROR: $TOPIC has $ACTUAL_PARTITIONS partitions, expected $PARTITIONS"
+              exit 1
+            fi
+            echo "topic $TOPIC ready with $ACTUAL_PARTITIONS partitions"
+          done
         resources:
           requests:
             cpu: 50m

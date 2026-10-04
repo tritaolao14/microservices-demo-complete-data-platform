@@ -44,12 +44,12 @@ Debezium chạy dưới dạng Kafka Connect worker, chỉ trong overlay dev
 | Thành phần | Giá trị |
 | --- | --- |
 | Worker | Image riêng `ghcr.io/tritaolao14/debezium` (FROM `quay.io/debezium/connect:2.7.3.Final` + plugin Avro), REST trên cổng `8083` |
-| Connector | `productcatalog-postgres` (`io.debezium.connector.postgresql.PostgresConnector`) |
-| Bảng nguồn | `public.products` (`table.include.list`) |
+| Connector | `productcatalog-postgres`, `orderitems-postgres` (`io.debezium.connector.postgresql.PostgresConnector`) |
+| Bảng nguồn | `public.products`, `analytics.order_items` (`table.include.list`) |
 | Plugin | `pgoutput`, snapshot `initial` |
-| Slot / publication | `debezium_productcatalog` / `debezium_productcatalog` (`publication.autocreate.mode=filtered`) |
-| Topic output | `cdc_product_changes` (Avro, 2 partitions) — xem DPFMD-32 |
-| Đăng ký connector | `Job/debezium-register` (reconcile, không chỉ POST một lần) — xem DPFMD-32 |
+| Slot / publication | `debezium_productcatalog` / `debezium_orderitems`, mỗi cặp một publication riêng (`publication.autocreate.mode=filtered`) |
+| Topic output | `cdc_product_changes` (2 partitions), `cdc_order_items` (4 partitions) — xem DPFMD-32 |
+| Đăng ký connector | `Job/debezium-register` (reconcile **mọi** connector, không chỉ POST một lần) — xem DPFMD-32 |
 
 Điểm vận hành đáng lưu ý:
 
@@ -78,6 +78,16 @@ kubectl -n onlineboutique-dev exec deploy/debezium-connect -- \
 kubectl -n onlineboutique-dev exec deploy/kafka -- \
   kafka-console-consumer --bootstrap-server kafka:9092 \
   --topic cdc_product_changes --partition 0 --offset LAST --max-messages 1
+
+# CDC của đơn hàng: topic này có event liên tục khi load generator đang chạy
+kubectl -n onlineboutique-dev exec deploy/kafka -- \
+  kafka-run-class kafka.tools.GetOffsetShell --bootstrap-server kafka:9092 \
+  --topic cdc_order_items --time -1
+
+# Slot phải active; nếu active=false thì connector chưa stream (xem cảnh báo JMX)
+kubectl -n onlineboutique-dev exec deploy/postgres -- psql -U boutique \
+  -d product_catalog -c \
+  "select slot_name, active from pg_replication_slots order by slot_name;"
 ```
 
 #### Đã triển khai (DPFMD-32)
@@ -128,6 +138,54 @@ Hai điểm cố ý:
 Job này cũng chính là "monitoring" của pipeline: drift giờ làm Job fail thay vì
 bị bỏ qua âm thầm. Trước DPFMD-32, Job chỉ `POST` và coi `409` là thành công, nên
 mọi thay đổi config trong git bị bỏ qua nếu connector đã tồn tại.
+
+#### Connector thứ hai: `analytics.order_items`
+
+`public.products` gần như **không đổi** khi app chạy: load generator chỉ tạo
+đơn hàng, không sửa catalog. Topic `cdc_product_changes` vì thế gần như trống, và
+một connector trên bảng đó không chứng minh được điều gì.
+
+Traffic thật nằm ở `analytics.order_items`, schema `analytics` trong cùng database
+`product_catalog`. Luồng: load generator → topic `orders` → `dataingestion` →
+`INSERT ... ON CONFLICT DO NOTHING` vào bảng này. Bảng có composite PK
+`(order_id, product_id)`, nên Debezium dựng được message key thật thay vì key rỗng.
+
+| Thành phần | Giá trị |
+| --- | --- |
+| Connector | `orderitems-postgres` |
+| Bảng nguồn | `analytics.order_items` |
+| `topic.prefix` | `orderdb` (khác `dbserver1`, xem ràng buộc JMX bên dưới) |
+| Slot / publication | `debezium_orderitems` / `debezium_orderitems` |
+| Schema history | `_schema-changes.order_items` |
+| Topic | `cdc_order_items`, 4 partitions, Avro |
+| Định tuyến | `RegexRouter`: `orderdb\.analytics\.order_items` → `cdc_order_items` |
+
+Mỗi connector cần `slot.name`, `publication.name` và schema-history topic riêng.
+Dùng chung slot sẽ khiến hai connector tranh nhau một replication stream và mất
+event.
+
+⚠️ **`topic.prefix` phải khác nhau giữa các connector.** Debezium đặt tên MBean
+JMX theo `topic.prefix`, nên hai connector cùng prefix sẽ đăng ký trùng MBean.
+Connector thứ hai kẹt trong vòng retry `Unable to register metrics ... retrying`
+(12 lần rồi lặp lại vô hạn), task báo `RUNNING` nhưng **luồng streaming không bao
+giờ khởi động**: replication slot vẫn `active=false` và topic không có event nào.
+Đây là kiểu lỗi nguy hiểm vì mọi thứ "đều xanh" trên status. Đã tái hiện và sửa
+bằng cách đặt `topic.prefix=orderdb` cho connector thứ hai.
+
+#### Thêm connector mới
+
+`ConfigMap/debezium-connector-config` dùng **mỗi key là một connector**, và
+`Job/debezium-register` duyệt toàn bộ `*.json` trong thư mục mount. Thêm connector
+mới chỉ cần:
+
+1.  Thêm một key mới vào ConfigMap, file là `<connector-name>.json` với
+    `{"name": ..., "config": {...}}`.
+2.  Thêm topic tương ứng vào `CDC_TOPICS` của `Job/kafka-create-topic` theo định
+    dạng `"<topic>:<partitions>"`.
+
+Job không dừng ở connector đầu tiên hỏng: nó ghi nhận lỗi, kiểm tra nốt các
+connector còn lại, rồi `exit 1` kèm danh sách connector chưa reconcile được. Nhờ
+vậy một config hỏng không che mất trạng thái của những connector khác.
 
 Ba điểm vận hành của image `cp-schema-registry:7.6.1`, đều đã tốn thời gian
 debug và đều có comment trong manifest:
