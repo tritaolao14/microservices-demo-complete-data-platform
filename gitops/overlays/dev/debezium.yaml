@@ -85,6 +85,38 @@ data:
         "transforms.route.replacement": "cdc_product_changes"
       }
     }
+  orderitems-postgres.json: |-
+    {
+      "name": "orderitems-postgres",
+      "config": {
+        "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+        "tasks.max": "1",
+        "database.hostname": "postgres",
+        "database.port": "5432",
+        "database.user": "boutique",
+        "database.password": "__DB_PASSWORD__",
+        "database.dbname": "product_catalog",
+        "topic.prefix": "orderdb",
+        "plugin.name": "pgoutput",
+        "slot.name": "debezium_orderitems",
+        "publication.name": "debezium_orderitems",
+        "publication.autocreate.mode": "filtered",
+        "table.include.list": "analytics.order_items",
+        "snapshot.mode": "initial",
+        "schema.history.internal.kafka.bootstrap.servers": "kafka:9092",
+        "schema.history.internal.kafka.topic": "_schema-changes.order_items",
+        "key.converter": "io.confluent.connect.avro.AvroConverter",
+        "key.converter.schema.registry.url": "http://schema-registry:8081",
+        "value.converter": "io.confluent.connect.avro.AvroConverter",
+        "value.converter.schema.registry.url": "http://schema-registry:8081",
+        "internal.key.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "internal.value.converter": "org.apache.kafka.connect.json.JsonConverter",
+        "transforms": "route",
+        "transforms.route.type": "org.apache.kafka.connect.transforms.RegexRouter",
+        "transforms.route.regex": "orderdb\\.analytics\\.order_items",
+        "transforms.route.replacement": "cdc_order_items"
+      }
+    }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -266,16 +298,15 @@ spec:
               key: db_password
         - name: CONNECT_URL
           value: http://debezium-connect:8083
-        - name: CONNECTOR_NAME
-          value: productcatalog-postgres
-        - name: CONFIG_FILE
-          value: /connectors/productcatalog-postgres.json
+        - name: CONFIG_DIR
+          value: /connectors
         - name: PYTHONUNBUFFERED
           value: "1"
         - name: PYTHONDONTWRITEBYTECODE
           value: "1"
         args:
         - |
+          import glob
           import json
           import os
           import sys
@@ -284,10 +315,13 @@ spec:
           import urllib.request
 
           CONNECT_URL = os.environ["CONNECT_URL"]
-          CONNECTOR = os.environ["CONNECTOR_NAME"]
-          CONFIG_FILE = os.environ["CONFIG_FILE"]
+          CONFIG_DIR = os.environ["CONFIG_DIR"]
           PASSWORD_KEY = "database.password"
           TIMEOUT_SECONDS = 300
+
+          class Failed(Exception):
+              """Per-connector failure, so one broken connector does not hide
+              the state of the others."""
 
           def request(method, path, payload=None):
               """Return (status, body). HTTP errors are values, not exceptions,
@@ -308,8 +342,7 @@ spec:
                       return exc.code, None
 
           def fail(message):
-              print("ERROR: " + message)
-              sys.exit(1)
+              raise Failed(message)
 
           def show(key, value):
               """Never print a secret, not even from a live response."""
@@ -331,78 +364,107 @@ spec:
                   print("  %s: git=%s live=%s"
                         % (key, show(key, desired.get(key)), show(key, live.get(key))))
 
-          # Wait for the REST API. The connector cannot be applied before the
-          # worker is up, and this Job may start before the Deployment is ready.
-          print("waiting for the Kafka Connect REST API at %s ..." % CONNECT_URL)
-          deadline = time.time() + TIMEOUT_SECONDS
-          while True:
-              try:
-                  if request("GET", "/connectors")[0] == 200:
-                      break
-              except Exception as exc:  # connection refused while starting
-                  last_error = exc
-              if time.time() > deadline:
-                  fail("REST API never became reachable (%s)" % last_error)
-              time.sleep(5)
+          def wait_for_api():
+              """The connectors cannot be applied before the worker is up, and
+              this Job may start before the Deployment is ready."""
+              print("waiting for the Kafka Connect REST API at %s ..." % CONNECT_URL)
+              deadline = time.time() + TIMEOUT_SECONDS
+              while True:
+                  try:
+                      if request("GET", "/connectors")[0] == 200:
+                          return
+                  except Exception as exc:  # connection refused while starting
+                      last_error = exc
+                  if time.time() > deadline:
+                      fail("REST API never became reachable (%s)" % last_error)
+                  time.sleep(5)
 
-          with open(CONFIG_FILE) as handle:
-              desired = json.load(handle)["config"]
-          desired[PASSWORD_KEY] = os.environ["DB_PASSWORD"]
-
-          status, live = request("GET", "/connectors/%s/config" % CONNECTOR)
-          if status == 404:
-              status, body = request("POST", "/connectors",
-                                     {"name": CONNECTOR, "config": desired})
-              if status not in (200, 201):
-                  fail("could not register %s (HTTP %s: %s)" % (CONNECTOR, status, body))
-              print("%s was missing from the worker and has been registered" % CONNECTOR)
-          elif status != 200:
-              fail("could not read the config of %s (HTTP %s: %s)" % (CONNECTOR, status, live))
-          else:
-              keys = drift(desired, live)
-              if not keys:
-                  print("live config already matches git for all %d keys, left untouched"
-                        % len(desired))
-              else:
-                  report("drift found in", keys, desired, live)
-                  status, body = request("PUT", "/connectors/%s/config" % CONNECTOR, desired)
+          def reconcile(connector, desired):
+              status, live = request("GET", "/connectors/%s/config" % connector)
+              if status == 404:
+                  status, body = request("POST", "/connectors",
+                                         {"name": connector, "config": desired})
                   if status not in (200, 201):
-                      fail("could not apply the config (HTTP %s: %s)" % (status, body))
-                  print("git config applied with PUT /config")
+                      fail("could not register (HTTP %s: %s)" % (status, body))
+                  print("was missing from the worker and has been registered")
+              elif status != 200:
+                  fail("could not read the config (HTTP %s: %s)" % (status, live))
+              else:
+                  keys = drift(desired, live)
+                  if not keys:
+                      print("live config already matches git for all %d keys, left untouched"
+                            % len(desired))
+                  else:
+                      report("drift found in", keys, desired, live)
+                      status, body = request("PUT", "/connectors/%s/config" % connector,
+                                             desired)
+                      if status not in (200, 201):
+                          fail("could not apply the config (HTTP %s: %s)" % (status, body))
+                      print("git config applied with PUT /config")
 
-          # Confirm the connector actually runs. A bad converter or an
-          # unreachable Schema Registry fails the task here, not silently.
-          print("waiting for the connector to report RUNNING ...")
-          deadline = time.time() + TIMEOUT_SECONDS
-          while True:
-              status, body = request("GET", "/connectors/%s/status" % CONNECTOR)
+              # Confirm the connector actually runs. A bad converter or an
+              # unreachable Schema Registry fails the task here, not silently.
+              print("waiting for the connector to report RUNNING ...")
+              deadline = time.time() + TIMEOUT_SECONDS
+              while True:
+                  status, body = request("GET", "/connectors/%s/status" % connector)
+                  if status != 200:
+                      fail("could not read the status (HTTP %s: %s)" % (status, body))
+                  connector_state = body.get("connector", {}).get("state")
+                  tasks = [task.get("state") for task in body.get("tasks", [])]
+                  if connector_state == "FAILED" or "FAILED" in tasks:
+                      for task in body.get("tasks", []):
+                          for line in (task.get("trace") or "").splitlines():
+                              print(line)
+                      fail("connector reported FAILED")
+                  if connector_state == "RUNNING" and tasks and all(s == "RUNNING" for s in tasks):
+                      print("connector and task are RUNNING")
+                      break
+                  if time.time() > deadline:
+                      fail("timed out waiting for RUNNING (connector=%s tasks=%s)"
+                           % (connector_state, tasks))
+                  time.sleep(5)
+
+              # Re-read the config, because the point of this Job is to prove the
+              # worker matches git rather than to assume the PUT did it.
+              status, live = request("GET", "/connectors/%s/config" % connector)
               if status != 200:
-                  fail("could not read the status of %s (HTTP %s: %s)" % (CONNECTOR, status, body))
-              connector_state = body.get("connector", {}).get("state")
-              tasks = [task.get("state") for task in body.get("tasks", [])]
-              if connector_state == "FAILED" or "FAILED" in tasks:
-                  for task in body.get("tasks", []):
-                      for line in (task.get("trace") or "").splitlines():
-                          print(line)
-                  fail("connector reported FAILED")
-              if connector_state == "RUNNING" and tasks and all(s == "RUNNING" for s in tasks):
-                  print("connector and task are RUNNING")
-                  break
-              if time.time() > deadline:
-                  fail("timed out waiting for RUNNING (connector=%s tasks=%s)"
-                       % (connector_state, tasks))
-              time.sleep(5)
+                  fail("could not re-read the config (HTTP %s)" % status)
+              keys = drift(desired, live)
+              if keys:
+                  report("ERROR: config still differs in", keys, desired, live)
+                  fail("config still differs after applying git")
+              print("verified: the live config matches git")
 
-          # Re-read the config, because the point of this Job is to prove the
-          # worker matches git rather than to assume the PUT did it.
-          status, live = request("GET", "/connectors/%s/config" % CONNECTOR)
-          if status != 200:
-              fail("could not re-read the config of %s (HTTP %s)" % (CONNECTOR, status))
-          keys = drift(desired, live)
-          if keys:
-              report("ERROR: config still differs in", keys, desired, live)
+          wait_for_api()
+
+          # Every *.json in the ConfigMap is one connector, so adding a table
+          # means adding a key here and nothing else.
+          paths = sorted(glob.glob(os.path.join(CONFIG_DIR, "*.json")))
+          if not paths:
+              # Top level, so this cannot go through fail(): an uncaught Failed
+              # would print a traceback instead of a readable error.
+              print("ERROR: no connector config found in %s" % CONFIG_DIR)
               sys.exit(1)
-          print("verified: the live config of %s matches git" % CONNECTOR)
+          failures = []
+          for path in paths:
+              with open(path) as handle:
+                  document = json.load(handle)
+              name = document["name"]
+              desired = dict(document["config"])
+              desired[PASSWORD_KEY] = os.environ["DB_PASSWORD"]
+              print("=== %s (%s) ===" % (name, os.path.basename(path)))
+              try:
+                  reconcile(name, desired)
+              except Failed as exc:
+                  print("ERROR: %s: %s" % (name, exc))
+                  failures.append(name)
+
+          if failures:
+              print("ERROR: %d connector(s) not reconciled: %s"
+                    % (len(failures), ", ".join(failures)))
+              sys.exit(1)
+          print("all %d connector(s) reconciled" % len(paths))
         volumeMounts:
         - name: connector-config
           mountPath: /connectors
