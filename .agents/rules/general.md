@@ -15,6 +15,12 @@
   - `refactor(dbt): split staging models`
 - Mỗi commit chỉ tập trung 1 domain: pipeline / dbt / dag / spark / quality / lakehouse.
 
+## PR documentation (BẮT BUỘC)
+- Mọi PR thay đổi hành vi data platform **phải cập nhật `docs/data-engineering-patterns.md`** trong cùng PR (bảng trạng thái, mục pattern kèm `file:line`, dòng "Cập nhật lần cuối").
+- PR không đụng data platform phải ghi rõ: `No data-platform behavior change`.
+- Chi tiết + danh sách path áp dụng: `AGENTS.md` → "Data Platform Documentation Rule".
+- Thiếu cập nhật tài liệu ⇒ PR chưa đủ điều kiện merge.
+
 ## Tự sửa lỗi
 - Khi test fail, Agent phải:
   1. Đọc log.

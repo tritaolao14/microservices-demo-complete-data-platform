@@ -215,6 +215,34 @@ kubectl -n onlineboutique-dev exec deploy/schema-registry -- \
 kubectl -n onlineboutique-dev logs job/debezium-register
 ```
 
+#### E2E test (DPFMD-33)
+
+`scripts/e2e-cdc.sh` chứng minh end-to-end đường PostgreSQL → Debezium → Kafka →
+Avro: nó `INSERT` một dòng mới rồi đọc lại đúng event đó từ topic, decode bằng
+Schema Registry.
+
+- Test 1: `analytics.order_items` → `cdc_order_items`.
+- Test 2: `public.products` → `cdc_product_changes`.
+- Cách làm: ghi nhận offset cuối mỗi partition **trước** khi insert, insert, rồi
+  đọc từ đúng offset đó (song song), assert `op=c` và đúng `after`; cuối cùng
+  `DELETE` dòng probe.
+
+Chi tiết quan trọng khi tự viết test tương tự:
+
+- Debezium bọc `after` thêm một tầng `<db>.<schema>.<table>.Value`
+  (`orderdb.analytics.order_items.Value` trong output của
+  `kafka-avro-console-consumer`), không phải object phẳng.
+- Field nullable được in dạng union `{"string": "..."}`.
+- Consumer Avro **phải chạy trong pod ephemeral riêng**. Chạy nó trong pod
+  `schema-registry` (limit 512Mi) sẽ OOMKill pod đó (`exit 137`) khi mở nhiều
+  consumer song song. Script dùng `kubectl run --rm --restart=Never` cho từng
+  partition (label `e2e-cdc-run`), rồi tự xoá.
+
+```bash
+scripts/e2e-cdc.sh                                    # kind-ci-local / onlineboutique-dev
+scripts/e2e-cdc.sh --cluster <ctx> --namespace <ns>   # hoặc env CLUSTER/NAMESPACE/TIMEOUT
+```
+
 ### Phase 3: Kho Dữ Liệu Trung Tâm (Data Warehouse / Lakehouse)
 *Mục tiêu: Lưu trữ dữ liệu tập trung phục vụ phân tích dài hạn.*
 
