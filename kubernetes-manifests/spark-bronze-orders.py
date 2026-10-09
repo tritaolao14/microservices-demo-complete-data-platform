@@ -57,7 +57,15 @@ def load(spark: SparkSession) -> int:
 
     log.info("reading Bronze Parquet from %s ...", SOURCE)
     try:
-        source = spark.read.parquet(SOURCE)
+        # recursiveFileLookup is required, not an optimisation. The Bronze zone
+        # is partitioned by date as {yyyy}/{mm}/{dd}; left to its default
+        # partition inference Spark tries to turn those numeric directory
+        # segments into partition columns and ends up with an empty file list,
+        # failing with UNABLE_TO_INFER_SCHEMA on every parent directory (only
+        # leaf date directories resolve). Turning inference off makes the tree
+        # a flat set of files, which is what is wanted here: _event_date is
+        # already a real column inside the Parquet files, so nothing is lost.
+        source = spark.read.option("recursiveFileLookup", "true").parquet(SOURCE)
         count = source.count()
     except Exception as exc:  # noqa: BLE001 - empty/missing source is not fatal
         log.warning("no readable Bronze Parquet under %s (%s)", SOURCE, exc)
