@@ -4,7 +4,7 @@ Tài liệu này liệt kê **các data engineering pattern đã áp dụng th�
 
 > **Quy tắc bắt buộc:** mỗi PR thay đổi hành vi data platform **phải cập nhật tài liệu này** trong cùng PR. Xem `AGENTS.md` → "Data Platform Documentation Rule".
 
-Cập nhật lần cuối: 2026-10-09 (sau DPFMD-33; thêm Bronze Layer Writer MinIO Parquet cho DPFMD-34). Đối tác: `docs/data-platform.md`, `.agents/knowledge/data-engineering-design-patterns-index.md`.
+Cập nhật lần cuối: 2026-10-09 (sau DPFMD-35; thêm Iceberg bronze.orders table bootstrap + Spark Job). Đối tác: `docs/data-platform.md`, `.agents/knowledge/data-engineering-design-patterns-index.md`.
 
 ## Chú giải trạng thái
 
@@ -31,8 +31,9 @@ Cập nhật lần cuối: 2026-10-09 (sau DPFMD-33; thêm Bronze Layer Writer M
 | 11 | Full / Incremental Batch Load + Upsert | Đang chạy | `src/data_processing/seed_database.py` |
 | 12 | Dimensional Modeling (một phần) | Đang chạy | `analytics.order_items` trong `seed_database.py:67` |
 | 13 | Object Storage / Data Lake | Đang chạy | `kubernetes-manifests/minio.yaml`, `src/data_processing/make_bucket_public.py`, `src/data_processing/lakehouse/sinks.py` |
-| 14 | Lakehouse / Iceberg Table Format | Cấu hình sẵn | `kubernetes-manifests/spark-iceberg-config.yaml` |
+| 14 | Lakehouse / Iceberg Table Format | Đang chạy | `kubernetes-manifests/spark-iceberg-config.yaml`, `kubernetes-manifests/spark-bronze-orders.yaml`, `kubernetes-manifests/spark-bronze-orders.py` |
 | 14b | Bronze Layer Writer (Parquet + Manifest) | Đang chạy | `src/data_processing/lakehouse/` |
+| 14c | Iceberg Bronze Orders Bootstrap Job | Đang chạy | `kubernetes-manifests/spark-bronze-orders.yaml:15`, `kubernetes-manifests/spark-bronze-orders.py:67` |
 | 15 | Orchestration (Airflow) | Chưa làm | roadmap Phase 3 |
 | 16 | Transformation (dbt / Star schema) | Chưa làm | roadmap Phase 3 |
 | 17 | Serving / Query Layer (Trino/ClickHouse) | Chưa làm | roadmap Phase 3 |
@@ -121,10 +122,11 @@ Cập nhật lần cuối: 2026-10-09 (sau DPFMD-33; thêm Bronze Layer Writer M
 - MinIO (S3-compatible) bucket `datalake-unstructured`, lưu ảnh sản phẩm (`kubernetes-manifests/minio.yaml`).
 - Bucket policy public-read (`src/data_processing/make_bucket_public.py`).
 
-## 14. Lakehouse / Iceberg — Cấu hình sẵn (chưa vận hành)
+## 14. Lakehouse / Iceberg — Đang chạy
 
 - `ConfigMap/spark-iceberg-config`: JDBC catalog trên Postgres, warehouse `s3a://iceberg-warehouse/`, `S3FileIO` tới MinIO.
-- **Chưa có Spark deployment/job nào chạy** — mới dừng ở cấu hình.
+- `Job/spark-bronze-orders`: bootstrap one-shot tạo namespace `bronze` và bảng `my_catalog.bronze.orders` (partition `days(_event_date)`), load dữ liệu từ Bronze Parquet landing zone `s3a://lakehouse/bronze/orders/` **chỉ khi bảng rỗng** (idempotent, an toàn khi re-run ArgoCD).
+- Chạy trên `apache/spark:3.5.3` với `--packages` (Iceberg runtime, AWS bundle, Hadoop S3A, Postgres JDBC), đọc config từ `spark-iceberg-config` ConfigMap.
 
 ## 14b. Bronze Layer Writer (MinIO Parquet) — Đang chạy
 
@@ -148,7 +150,23 @@ Cấu trúc theo **Clean Architecture (Ports & Adapters)**: `domain/` (entity + 
 - Đã verify E2E cục bộ: 3 event → 2 partition ngày (`2026/10/09`, `2026/10/10`), mỗi partition có Parquet + `_manifest.json` + `_SUCCESS`, đọc lại Parquet thấy đúng schema; 25 unit test (`pytest`, gồm roundtrip pyarrow) + ruff pass.
 - Phụ thuộc: `boto3`, `kafka-python`, `pyarrow` (`src/data_processing/requirements.in`).
 
-## 15–18. Chưa làm
+## 14c. Iceberg Bronze Orders Bootstrap Job — Đang chạy
+
+Job `spark-bronze-orders` (DPFMD-35) bootstrap bảng Iceberg `my_catalog.bronze.orders` từ Bronze landing zone:
+
+- **Manifest**: `kubernetes-manifests/spark-bronze-orders.yaml` (base, áp dụng cho mọi overlay).
+- **Driver**: `kubernetes-manifests/spark-bronze-orders.py` (ConfigMap `spark-bronze-orders-script`).
+- **Config**: đọc `spark-iceberg-config` ConfigMap (JDBC catalog `my_catalog` trên Postgres `product_catalog`, warehouse `s3a://iceberg-warehouse/`, `S3FileIO` MinIO, Hadoop `s3a` client cho Bronze source).
+- **Logic idempotent**: `CREATE TABLE IF NOT EXISTS` → kiểm tra `count(*)` → `INSERT INTO ... SELECT` từ `s3a://lakehouse/bronze/orders/` **chỉ khi bảng rỗng**. Re-run (ArgoCD sync) không duplicate.
+- **Packages**: Iceberg 1.6.1 (`iceberg-spark-runtime-3.5_2.12`, `iceberg-aws-bundle`), Postgres 42.7.3, Hadoop AWS 3.3.4, AWS SDK 1.12.262 (resolve via `--packages` runtime, ivy cache `/tmp/ivy`).
+- **Verify E2E**: seed Bronze Parquet → run Job → Iceberg metadata trong Postgres (`iceberg_tables`) + data files trong `s3a://iceberg-warehouse/bronze/orders/` → `SELECT count(*) FROM my_catalog.bronze.orders` trả về số dòng đúng.
+
+| Pattern (knowledge index) | Bằng chứng |
+|---------------------------|------------|
+| Full Loader (Ch.2) — bootstrap Iceberg table từ Parquet landing zone | `kubernetes-manifests/spark-bronze-orders.py:67` |
+| Partitioner (Ch.8) — `days(_event_date)` partition | `kubernetes-manifests/spark-bronze-orders.py:81` |
+| Idempotent Writer (Ch.4) — load only khi bảng rỗng | `kubernetes-manifests/spark-bronze-orders.py:73` |
+| Declarative Config Reconciliation (Ch.10) — Job base + ConfigMapGenerator | `kubernetes-manifests/kustomization.yaml:35` |
 
 - **Orchestration (Airflow)**, **Transformation (dbt + Star schema)**, **Query layer (Trino/ClickHouse)**, **BI (Superset/Metabase)** — thuộc Phase 3–4 trong `docs/data-platform.md`.
 - **Security & Governance** (SealedSecret, Schema Registry auth, mã hoá config topic) — Sprint 3 trong `TODO.md`.
