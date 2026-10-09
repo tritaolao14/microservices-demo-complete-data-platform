@@ -31,12 +31,18 @@ resources:
   - postgresql.yaml
   - minio.yaml
   - spark-bronze-orders.yaml
+  - spark-iceberg-maintenance.yaml
   - local-cdn.yaml
   - spark-iceberg-config.yaml
 configMapGenerator:
 - name: spark-bronze-orders-script
   files:
   - spark-bronze-orders.py
+  options:
+    disableNameSuffixHash: true
+- name: spark-iceberg-maintenance-script
+  files:
+  - spark-iceberg-maintenance.py
   options:
     disableNameSuffixHash: true
 
