@@ -4,7 +4,7 @@ Tài liệu này liệt kê **các data engineering pattern đã áp dụng th�
 
 > **Quy tắc bắt buộc:** mỗi PR thay đổi hành vi data platform **phải cập nhật tài liệu này** trong cùng PR. Xem `AGENTS.md` → "Data Platform Documentation Rule".
 
-Cập nhật lần cuối: 2026-10-09 (sau PR #35, DPFMD-32; thêm E2E test CDC cho DPFMD-33). Đối tác: `docs/data-platform.md`, `.agents/knowledge/data-engineering-design-patterns-index.md`.
+Cập nhật lần cuối: 2026-10-09 (sau DPFMD-33; thêm Bronze Layer Writer MinIO Parquet cho DPFMD-34). Đối tác: `docs/data-platform.md`, `.agents/knowledge/data-engineering-design-patterns-index.md`.
 
 ## Chú giải trạng thái
 
@@ -30,8 +30,9 @@ Cập nhật lần cuối: 2026-10-09 (sau PR #35, DPFMD-32; thêm E2E test CDC 
 | 10 | GitOps (ArgoCD + Kustomize overlays) | Đang chạy | `gitops/overlays/{dev,staging,production}` |
 | 11 | Full / Incremental Batch Load + Upsert | Đang chạy | `src/data_processing/seed_database.py` |
 | 12 | Dimensional Modeling (một phần) | Đang chạy | `analytics.order_items` trong `seed_database.py:67` |
-| 13 | Object Storage / Data Lake | Đang chạy | `kubernetes-manifests/minio.yaml`, `src/data_processing/make_bucket_public.py` |
+| 13 | Object Storage / Data Lake | Đang chạy | `kubernetes-manifests/minio.yaml`, `src/data_processing/make_bucket_public.py`, `src/data_processing/lakehouse/sinks.py` |
 | 14 | Lakehouse / Iceberg Table Format | Cấu hình sẵn | `kubernetes-manifests/spark-iceberg-config.yaml` |
+| 14b | Bronze Layer Writer (Parquet + Manifest) | Đang chạy | `src/data_processing/lakehouse/` |
 | 15 | Orchestration (Airflow) | Chưa làm | roadmap Phase 3 |
 | 16 | Transformation (dbt / Star schema) | Chưa làm | roadmap Phase 3 |
 | 17 | Serving / Query Layer (Trino/ClickHouse) | Chưa làm | roadmap Phase 3 |
@@ -125,6 +126,28 @@ Cập nhật lần cuối: 2026-10-09 (sau PR #35, DPFMD-32; thêm E2E test CDC 
 - `ConfigMap/spark-iceberg-config`: JDBC catalog trên Postgres, warehouse `s3a://iceberg-warehouse/`, `S3FileIO` tới MinIO.
 - **Chưa có Spark deployment/job nào chạy** — mới dừng ở cấu hình.
 
+## 14b. Bronze Layer Writer (MinIO Parquet) — Đang chạy
+
+Package `src/data_processing/lakehouse/` land raw order event xuống `s3://lakehouse/bronze/orders/{yyyy}/{mm}/{dd}/` dưới dạng **Parquet snappy** + manifest (DPFMD-34). Đây là landing zone thô; bảng Iceberg (DPFMD-35) sẽ bọc lên trên.
+
+Cấu trúc theo **Clean Architecture (Ports & Adapters)**: `domain/` (entity + logic thuần) ← `application/` (use case + ports) ← `infrastructure/` (adapter MinIO/Parquet/env); `runner.py` là composition root, `domain` không phụ thuộc ra ngoài.
+
+| Pattern (knowledge index) | Bằng chứng |
+|---------------------------|------------|
+| Horizontal Partitioner (Ch.8) — `yyyy/mm/dd`, ngày chuẩn hoá **UTC** | `domain/partitioning.py:31`, `application/layout.py:16`, `application/writer.py:164` |
+| Manifest (Ch.8) — reader dùng `_manifest.json` thay vì list S3 | `domain/manifest.py:47`, `domain/manifest.py:54`, `application/writer.py:196` |
+| Transactional Writer (Ch.4) — ghi `_staging/` rồi commit atomic (copy) | `application/writer.py:190` |
+| Proxy / Readiness Marker (Ch.6) — `_SUCCESS` sau khi commit manifest | `application/writer.py:213`, `application/layout.py:11` |
+| Circuit Breaker / Retry (Ch.3) — backoff + jitter quanh I/O S3 | `application/retry.py:16`, `application/writer.py` `_call()` |
+| Metadata Decorator / Wrapper (Ch.5) — cột `_ingested_at`, `_event_date`, `_source_topic`, `_kafka_partition`, `_kafka_offset`, `_schema_version`, payload gốc ở cột `raw` | `infrastructure/parquet_encoder.py:25`, `domain/records.py` |
+
+- Ports (Dependency Inversion): `ObjectSink`, `RecordEncoder` (`application/ports.py:16`, `application/ports.py:39`); adapter `Boto3Sink`/`InMemorySink` (`infrastructure/sinks.py`) và `ParquetEncoder` (`infrastructure/parquet_encoder.py`).
+- Idempotency: tên file `part-<sha256(content)[:16]>.parquet` + `Manifest.upsert` dedupe theo `path` ⇒ replay cùng batch không tạo file trùng (`application/writer.py:164`, `domain/manifest.py:54`).
+- Rollover file: `BRONZE_FLUSH_ROWS` (mặc định 50k), `BRONZE_TARGET_FILE_BYTES` (mặc định 128 MiB), `BRONZE_FLUSH_INTERVAL_SECONDS` (mặc định 60s) — `application/rollover.py`, `application/options.py`, `infrastructure/config.py`.
+- Đầu vào: Kafka topic `orders` (mặc định) hoặc file JSONL (`--input`) để dry-run; entrypoint `python -m lakehouse.runner` / `bronze_orders_writer.py` (`runner.py`).
+- Đã verify E2E cục bộ: 3 event → 2 partition ngày (`2026/10/09`, `2026/10/10`), mỗi partition có Parquet + `_manifest.json` + `_SUCCESS`, đọc lại Parquet thấy đúng schema; 25 unit test (`pytest`, gồm roundtrip pyarrow) + ruff pass.
+- Phụ thuộc: `boto3`, `kafka-python`, `pyarrow` (`src/data_processing/requirements.in`).
+
 ## 15–18. Chưa làm
 
 - **Orchestration (Airflow)**, **Transformation (dbt + Star schema)**, **Query layer (Trino/ClickHouse)**, **BI (Superset/Metabase)** — thuộc Phase 3–4 trong `docs/data-platform.md`.
@@ -140,11 +163,14 @@ Cập nhật lần cuối: 2026-10-09 (sau PR #35, DPFMD-32; thêm E2E test CDC 
 |--------------|------------------|
 | Ch.2 Data Ingestion | Full Loader (`seed_database`), Incremental (order_items theo `event_timestamp`), CDC Replication (Debezium) |
 | Ch.3 Error Management | Dead-Letter (DLQ), Circuit Breaker/Retry |
-| Ch.4 Idempotency | Keyed Idempotency / Idempotent Writer (`ON CONFLICT DO NOTHING`) |
+| Ch.4 Idempotency | Keyed Idempotency / Idempotent Writer (`ON CONFLICT DO NOTHING`), Transactional Writer (`lakehouse/application/writer.py`) |
+| Ch.5 Data Value | Metadata Decorator (cột metadata Bronze — `lakehouse/infrastructure/parquet_encoder.py`) |
+| Ch.6 Data Flow | Proxy / Readiness Marker (`_SUCCESS` — `lakehouse/application/writer.py`) |
+| Ch.8 Data Storage | Horizontal Partitioner (date `yyyy/mm/dd`), Manifest (`_manifest.json`) — `src/data_processing/lakehouse/` |
 | Ch.9 Data Quality | Schema Enforcer (Avro registry), một phần Gatekeeper (`validate_order`) |
 | Ch.10 Observability | Offline Observer (reconcile Job = drift detection) |
 
-**Gap chính:** Windowed Deduplicator, AWAP, Full Star schema (dbt), Hybrid Consumer, Z-Order / partitioning ở tầng lưu trữ.
+**Gap chính:** Windowed Deduplicator, AWAP, Full Star schema (dbt), Hybrid Consumer, Z-Order.
 
 ---
 
