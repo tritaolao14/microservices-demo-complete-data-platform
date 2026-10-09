@@ -22,6 +22,7 @@ resources:
   - dataingestion.yaml
   - emailservice.yaml
   - frontend.yaml
+  - lakehouse-bronze-writer.yaml
 # - loadgenerator.yaml # During development, the loadgenerator module inside skaffold.yaml will be used.
   - paymentservice.yaml
   - productcatalogservice.yaml
