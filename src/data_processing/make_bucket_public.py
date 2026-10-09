@@ -1,6 +1,7 @@
-import boto3
 import json
 import os
+
+import boto3
 
 s3_client = boto3.client('s3',
     endpoint_url=os.getenv("MINIO_ENDPOINT", "http://localhost:9000"),

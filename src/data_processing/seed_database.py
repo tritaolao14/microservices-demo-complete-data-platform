@@ -1,12 +1,13 @@
-import json
-import os
-import psycopg2
-import boto3
+import concurrent.futures
 import csv
 import io
+import json
+import os
 import urllib.parse
+
+import boto3
+import psycopg2
 import requests
-import concurrent.futures
 from botocore.exceptions import ClientError
 
 # --- Config ---

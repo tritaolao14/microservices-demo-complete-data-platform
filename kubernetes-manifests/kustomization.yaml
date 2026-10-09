@@ -15,23 +15,31 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
- - adservice.yaml
- - cartservice.yaml
- - checkoutservice.yaml
- - currencyservice.yaml
- - dataingestion.yaml
- - emailservice.yaml
- - frontend.yaml
+  - adservice.yaml
+  - cartservice.yaml
+  - checkoutservice.yaml
+  - currencyservice.yaml
+  - dataingestion.yaml
+  - emailservice.yaml
+  - frontend.yaml
 # - loadgenerator.yaml # During development, the loadgenerator module inside skaffold.yaml will be used.
- - paymentservice.yaml
- - productcatalogservice.yaml
- - recommendationservice.yaml
- - shippingservice.yaml
- - kafka.yaml
- - postgresql.yaml
- - minio.yaml
- - local-cdn.yaml
- - spark-iceberg-config.yaml
+  - paymentservice.yaml
+  - productcatalogservice.yaml
+  - recommendationservice.yaml
+  - shippingservice.yaml
+  - kafka.yaml
+  - postgresql.yaml
+  - minio.yaml
+  - spark-bronze-orders.yaml
+  - local-cdn.yaml
+  - spark-iceberg-config.yaml
+configMapGenerator:
+- name: spark-bronze-orders-script
+  files:
+  - spark-bronze-orders.py
+  options:
+    disableNameSuffixHash: true
+
 # components:
 # - ../kustomize/components/cymbal-branding
 # - ../kustomize/components/google-cloud-operations
