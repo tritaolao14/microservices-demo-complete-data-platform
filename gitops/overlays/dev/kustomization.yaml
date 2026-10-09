@@ -28,6 +28,7 @@ resources:
 - loadgenerator.yaml
 - debezium.yaml
 - schema-registry.yaml
+- lakehouse-bronze-writer.yaml
 images:
 - name: adservice
   newName: ghcr.io/tritaolao14/adservice
@@ -47,11 +48,21 @@ images:
 - name: debezium
   newName: ghcr.io/tritaolao14/debezium
   newTag: ff1cf78ca35a9831e40be67186c7971822389575
+# Bronze Parquet writer; built by skaffold from src/data_processing. Dev-only:
+# it is the piece that turns the orders topic into Bronze Parquet, and the
+# later layers (Iceberg load, retention) are still being finished.
+- name: lakehouse
+  newName: ghcr.io/tritaolao14/lakehouse
+  newTag: 45483a962448f4a5fc8655ee4c5d16f99ede3755
 - name: emailservice
   newName: ghcr.io/tritaolao14/emailservice
   newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
 - name: frontend
   newName: ghcr.io/tritaolao14/frontend
+  newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
+# Bronze Parquet writer; built by skaffold from src/data_processing
+- name: lakehouse
+  newName: ghcr.io/tritaolao14/lakehouse
   newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
 - name: paymentservice
   newName: ghcr.io/tritaolao14/paymentservice
