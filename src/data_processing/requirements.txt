@@ -10,7 +10,7 @@ jmespath==1.1.0
     # via
     #   boto3
     #   botocore
-kafka-python==2.2.3
+kafka-python==2.3.2
     # via -r requirements.in
 pyarrow==26.0.0
     # via -r requirements.in
