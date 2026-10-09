@@ -4,7 +4,7 @@ Tài liệu này liệt kê **các data engineering pattern đã áp dụng th�
 
 > **Quy tắc bắt buộc:** mỗi PR thay đổi hành vi data platform **phải cập nhật tài liệu này** trong cùng PR. Xem `AGENTS.md` → "Data Platform Documentation Rule".
 
-Cập nhật lần cuối: 2026-10-09 (sau DPFMD-35; thêm Iceberg bronze.orders table bootstrap + Spark Job). Đối tác: `docs/data-platform.md`, `.agents/knowledge/data-engineering-design-patterns-index.md`.
+Cập nhật lần cuối: 2026-10-09 (sau DPFMD-36; thêm Iceberg table maintenance — expire_snapshots + compaction). Đối tác: `docs/data-platform.md`, `.agents/knowledge/data-engineering-design-patterns-index.md`.
 
 ## Chú giải trạng thái
 
@@ -34,6 +34,7 @@ Cập nhật lần cuối: 2026-10-09 (sau DPFMD-35; thêm Iceberg bronze.orders
 | 14 | Lakehouse / Iceberg Table Format | Đang chạy | `kubernetes-manifests/spark-iceberg-config.yaml`, `kubernetes-manifests/spark-bronze-orders.yaml`, `kubernetes-manifests/spark-bronze-orders.py` |
 | 14b | Bronze Layer Writer (Parquet + Manifest) | Đang chạy | `src/data_processing/lakehouse/` |
 | 14c | Iceberg Bronze Orders Bootstrap Job | Đang chạy | `kubernetes-manifests/spark-bronze-orders.yaml:15`, `kubernetes-manifests/spark-bronze-orders.py:67` |
+| 14d | Iceberg Table Maintenance (expire_snapshots + compaction) | Đang chạy | `kubernetes-manifests/spark-iceberg-maintenance.py:76`, `kubernetes-manifests/spark-iceberg-maintenance.yaml:26` |
 | 15 | Orchestration (Airflow) | Chưa làm | roadmap Phase 3 |
 | 16 | Transformation (dbt / Star schema) | Chưa làm | roadmap Phase 3 |
 | 17 | Serving / Query Layer (Trino/ClickHouse) | Chưa làm | roadmap Phase 3 |
@@ -167,6 +168,38 @@ Job `spark-bronze-orders` (DPFMD-35) bootstrap bảng Iceberg `my_catalog.bronze
 | Partitioner (Ch.8) — `days(_event_date)` partition | `kubernetes-manifests/spark-bronze-orders.py:81` |
 | Idempotent Writer (Ch.4) — load only khi bảng rỗng | `kubernetes-manifests/spark-bronze-orders.py:73` |
 | Declarative Config Reconciliation (Ch.10) — Job base + ConfigMapGenerator | `kubernetes-manifests/kustomization.yaml:35` |
+
+> **Lỗi đã biết (DPFMD-35, phát hiện khi verify DPFMD-36):** `spark.read.parquet("s3a://lakehouse/bronze/orders/")` **không đọc được** — Spark trả `UNABLE_TO_INFER_SCHEMA`. Đo trực tiếp trên cluster: đọc leaf directory (`.../2026/10/08`) thành công, nhưng mọi thư mục cha (`.../2026/10`, `.../2026`, `.../orders`) đều fail. Do đó `try/except` ở `spark-bronze-orders.py:62` nuốt lỗi và **Job vẫn exit 0 với bảng rỗng**. Bronze Parquet do chính DPFMD-34 ghi ra (không phải dữ liệu dựng tay) cũng bị lỗi này. Sửa ở PR riêng.
+
+## 14d. Iceberg Table Maintenance (expire_snapshots + compaction) — Đang chạy
+
+CronJob `spark-iceberg-maintenance` (DPFMD-36) chạy bảo trì định kỳ cho `my_catalog.bronze.orders`.
+
+Ticket DPFMD-36 viết bằng **ngôn ngữ Delta Lake**, nhưng DPFMD-35 tạo bảng **Iceberg** và Iceberg không có lệnh `VACUUM`. Bảng ánh xạ dùng trong driver:
+
+| Delta Lake (ngôn ngữ ticket) | Apache Iceberg (thứ thực sự chạy) |
+|-----------------------------|-------------------------------------|
+| `VACUUM t RETAIN 7 DAYS` | `CALL my_catalog.system.expire_snapshots(older_than => now()-7d)` |
+| `delta.deletedFileRetentionDuration` | `history.expire.max-snapshot-age-ms` |
+| `delta.logRetentionDuration` | `history.expire.min-snapshots-to-keep` |
+| `OPTIMIZE t ZORDER BY (c)` | `rewrite_data_files(strategy => 'binpack')` |
+| *(không có tương đương)* | `remove_orphan_files` |
+
+> **Cảnh báo khi đọc ticket:** copy nguyên cấu hình Delta sang Iceberg **không báo lỗi nhưng cũng không có tác dụng** — Iceberg âm thầm bỏ qua table property lạ (ví dụ `delta.retentionPeriod`, `delta.partitionColumns` đều không tồn tại trong Iceberg). Dạng "thành công giả" này nguy hiểm hơn lỗi rõ ràng.
+
+- **Driver**: `kubernetes-manifests/spark-iceberg-maintenance.py` (ConfigMap `spark-iceberg-maintenance-script`).
+- **CronJob**: `kubernetes-manifests/spark-iceberg-maintenance.yaml` — `schedule "23 4 * * *"`, `concurrencyPolicy: Forbid` (expire/rewrite đều commit cùng cấp metadata, không được chạy chồng).
+- **Policy nằm trong table properties**, không nhúng trong script: mọi client đọc bảng đều thấy cùng policy. Hằng số trong Python là nguồn sự thật duy nhất, vừa ghi vào bảng vừa truyền cho procedure ⇒ không thể lệch nhau.
+- Giá trị: `max-snapshot-age-ms=604800000` (7d, thay default 5d của Iceberg), `min-snapshots-to-keep=24` (thay default 1), compaction `min-input-files=2`, `target-file-size-bytes=128 MiB` (khớp `BRONZE_TARGET_FILE_BYTES` của DPFMD-34).
+- **Ràng buộc cứng**: `older_than` của `remove_orphan_files` **phải ≥** `history.expire.max-snapshot-age-ms`. Nếu đặt nhỏ hơn, một file còn được snapshot sống tham chiếu có thể bị xoá → **mất dữ liệu không báo lỗi**. Giá trị hiện tại: 3d.
+- `remove_orphan_files` chạy `dry_run=true` mặc định (env `ICEBERG_ORPHAN_DRY_RUN`), chỉ đổi sang `false` sau khi xem kết quả.
+- Driver tự bỏ qua nếu bảng không dùng được (`table_exists`) — CronJob chạy trước bootstrap không được phép fail.
+
+**Chưa làm — retention theo tuổi dữ liệu ("30d/90d" trong ticket).** Iceberg **không có** policy tự động xoá partition theo tuổi; phải `DROP PARTITION` thủ công. Quan trọng hơn: hiện Bronze chỉ sync vào Iceberg **một lần lúc bootstrap** (`spark-bronze-orders.py:53`), nên prune Bronze Parquet trước khi có sync định kỳ sẽ xoá dữ liệu chưa từng vào Iceberg. Cần một subtask sync định kỳ trước.
+
+- **Verify E2E**: CronJob chạy exit 0; `SHOW TBLPROPERTIES` xác nhận đủ 4 property đã persist vào Iceberg metadata (`604800000`, `24`, `true`, `10`). *Giới hạn:* bảng chỉ có ≤1 snapshot nên `expire_snapshots` là no-op — test chứng minh procedure chạy đúng, **không** chứng minh việc xoá hoạt động.
+
+## 15–18. Chưa làm
 
 - **Orchestration (Airflow)**, **Transformation (dbt + Star schema)**, **Query layer (Trino/ClickHouse)**, **BI (Superset/Metabase)** — thuộc Phase 3–4 trong `docs/data-platform.md`.
 - **Security & Governance** (SealedSecret, Schema Registry auth, mã hoá config topic) — Sprint 3 trong `TODO.md`.
