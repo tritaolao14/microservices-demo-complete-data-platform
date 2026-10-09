@@ -155,20 +155,25 @@ Cấu trúc theo **Clean Architecture (Ports & Adapters)**: `domain/` (entity + 
 
 Job `spark-bronze-orders` (DPFMD-35) bootstrap bảng Iceberg `my_catalog.bronze.orders` từ Bronze landing zone:
 
-- **Manifest**: `kubernetes-manifests/spark-bronze-orders.yaml` (base, áp dụng cho mọi overlay).
+- **Manifest**: `kubernetes-manifests/spark-bronze-orders.yaml` (CronJob trong base, áp dụng cho mọi overlay).
 - **Driver**: `kubernetes-manifests/spark-bronze-orders.py` (ConfigMap `spark-bronze-orders-script`).
 - **Config**: đọc `spark-iceberg-config` ConfigMap (JDBC catalog `my_catalog` trên Postgres `product_catalog`, warehouse `s3a://iceberg-warehouse/`, `S3FileIO` MinIO, Hadoop `s3a` client cho Bronze source).
-- **Logic idempotent**: `CREATE TABLE IF NOT EXISTS` → kiểm tra `count(*)` → `INSERT INTO ... SELECT` từ `s3a://lakehouse/bronze/orders/` **chỉ khi bảng rỗng**. Re-run (ArgoCD sync) không duplicate.
+- **Logic load incremental**: mỗi lần chạy chỉ `INSERT` các file Bronze **chưa từng nạp**, theo tên file trong bảng state `my_catalog.bronze.ingest_state` (`path`, `rows`, `ingested_at`). Trước đây driver **chỉ load khi bảng rỗng** (`if existing: return`), nên chỉ batch đầu tiên vào được Iceberg — mọi order sau đó nằm mãi trong Parquet zone và bảng Iceberg đứng yên.
+  - Cơ sở của idempotency: Bronze writer đặt tên file theo **content hash** (`part-<sha256[:16]>.parquet`, `application/writer.py:164`), nên file đã nạp luôn giữ nguyên tên — chỉ cần nhớ tên là đủ.
+  - Anti-join `LEFT ANTI JOIN` lấy danh sách file mới; rows và state cùng đọc từ **một** view `bronze_pending_files` nên không thể lệch nhau. State ghi **sau** khi rows đã land.
+  - `input_file_name()` gắn nguồn gốc từng row để đối chiếu với state.
+  - Migration: nếu `orders` có dữ liệu nhưng `ingest_state` rỗng (bảng do bản load-once cũ tạo, không ghi lịch sử file) → đánh dấu **mọi file hiện có là đã nạp** và bỏ qua, để không nhân bản. Từ lần chạy sau mới load tiếp.
+- **CronJob, không phải Job** (`schedule "37 * * * *"`, `concurrencyPolicy: Forbid`): bảng Iceberg chỉ mới được bằng lần chạy cuối, mà Job do ArgoCD tạo lại khi git đổi thì chạy theo git chứ không theo order đến. Hai lần chạy chồng sẽ tranh cùng một view "file mới".
 - **Bắt buộc `recursiveFileLookup=true`** khi đọc Bronze zone (`spark-bronze-orders.py:68`). Bronze partition theo `{yyyy}/{mm}/{dd}`; để Spark tự suy luận partition sẽ biến các segment số thành partition column, danh sách file thành rỗng và **fail `UNABLE_TO_INFER_SCHEMA` ở mọi thư mục cha** (chỉ leaf directory đọc được). Tắt suy luận thì cây thư mục thành tập file phẳng — không mất cột nào vì `_event_date` đã là cột thật bên trong Parquet. Trước khi sửa, lỗi này khiến Job **exit 0 với bảng rỗng** vì `try/except` nuốt exception — thành công giả, đã verify lại bằng data do chính writer DPFMD-34 sinh ra.
 - **Packages**: Iceberg 1.6.1 (`iceberg-spark-runtime-3.5_2.12`, `iceberg-aws-bundle`), Postgres 42.7.3, Hadoop AWS 3.3.4, AWS SDK 1.12.262 (resolve via `--packages` runtime, ivy cache `/tmp/ivy`).
-- **Verify E2E**: seed Bronze Parquet → run Job → Iceberg metadata trong Postgres (`iceberg_tables`) + data files trong `s3a://iceberg-warehouse/bronze/orders/` → `SELECT count(*) FROM my_catalog.bronze.orders` trả về số dòng đúng.
+- **Verify E2E**: batch 1 (2 event ngày 08) → `appended 1 file(s) ... now holds 2 row(s)`; batch 2 (3 event: 1 ngày 08 + 2 ngày 09) → `appended 2 file(s) ... now holds 5 row(s)`; chạy lại không có data mới → `every Bronze file is already loaded ... unchanged at 5 row(s)`. Bảng cuối: 5 rows, `ingest_state` 3 file, 2 snapshots, partition `2026-10-08`=3 / `2026-10-09`=2 — khớp cả 5 event, không trùng dòng.
 
 | Pattern (knowledge index) | Bằng chứng |
 |---------------------------|------------|
-| Full Loader (Ch.2) — bootstrap Iceberg table từ Parquet landing zone | `kubernetes-manifests/spark-bronze-orders.py:67` |
-| Partitioner (Ch.8) — `days(_event_date)` partition | `kubernetes-manifests/spark-bronze-orders.py:81` |
-| Idempotent Writer (Ch.4) — load only khi bảng rỗng | `kubernetes-manifests/spark-bronze-orders.py:73` |
-| Declarative Config Reconciliation (Ch.10) — Job base + ConfigMapGenerator | `kubernetes-manifests/kustomization.yaml:35` |
+| Full Loader (Ch.2) — nạp Bronze Parquet landing zone vào Iceberg | `kubernetes-manifests/spark-bronze-orders.py:135` |
+| Partitioner (Ch.8) — `days(_event_date)` partition | `kubernetes-manifests/spark-bronze-orders.py:43` |
+| Idempotent Writer (Ch.4) — chỉ nạp file chưa có trong `ingest_state` | `kubernetes-manifests/spark-bronze-orders.py:76`, `application/writer.py:164` |
+| Declarative Config Reconciliation (Ch.10) — CronJob base + ConfigMapGenerator | `kubernetes-manifests/kustomization.yaml:35` |
 
 > **Lỗi đã biết (DPFMD-35, phát hiện khi verify DPFMD-36):** `spark.read.parquet("s3a://lakehouse/bronze/orders/")` **không đọc được** — Spark trả `UNABLE_TO_INFER_SCHEMA`. Đo trực tiếp trên cluster: đọc leaf directory (`.../2026/10/08`) thành công, nhưng mọi thư mục cha (`.../2026/10`, `.../2026`, `.../orders`) đều fail. Do đó `try/except` ở `spark-bronze-orders.py:62` nuốt lỗi và **Job vẫn exit 0 với bảng rỗng**. Bronze Parquet do chính DPFMD-34 ghi ra (không phải dữ liệu dựng tay) cũng bị lỗi này. Sửa ở PR riêng.
 
