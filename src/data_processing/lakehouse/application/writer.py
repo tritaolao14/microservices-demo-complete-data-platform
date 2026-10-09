@@ -72,6 +72,21 @@ class _RecordBuffer:
         self._size_bytes = 0
         return records
 
+    def snapshot(self) -> list[RawRecord]:
+        """Return a copy of the buffered records without clearing them."""
+        return list(self._records)
+
+    def clear(self) -> None:
+        self._records = []
+        self._size_bytes = 0
+
+    def restore(self, records: Sequence[RawRecord]) -> None:
+        """Put records back after a failed flush so nothing is lost."""
+        self._records = list(records)
+        self._size_bytes = sum(
+            _estimate_size_bytes(record.payload) for record in self._records
+        )
+
 
 @dataclass
 class BronzeOrdersWriter:
@@ -146,14 +161,31 @@ class BronzeOrdersWriter:
         return self.flush() if should_flush else []
 
     def flush(self) -> list[WriteResult]:
-        """Commit all buffered records, grouped by UTC event-date partition."""
+        """Commit all buffered records, grouped by UTC event-date partition.
+
+        The buffer is only cleared once every partition has been committed.
+        Draining first and committing second loses the records outright if any
+        partition fails: the buffer is already empty and there is nothing left
+        to retry from. A partition that did succeed before the failure is safe
+        to rewrite, because data files are named by content hash and the
+        manifest upsert dedupes by path.
+        """
         if len(self._buffer) == 0:
             return []
-        records = self._buffer.drain()
-        results = [
-            self._commit_partition(event_date, group)
-            for event_date, group in _group_by_event_date(records)
-        ]
+        records = self._buffer.snapshot()
+        try:
+            results = [
+                self._commit_partition(event_date, group)
+                for event_date, group in _group_by_event_date(records)
+            ]
+        except Exception:
+            self._buffer.restore(records)
+            self.log.error(
+                "flush failed; %d record(s) kept in the buffer for retry",
+                len(records),
+            )
+            raise
+        self._buffer.clear()
         self._opened_at = self.clock()
         return results
 
