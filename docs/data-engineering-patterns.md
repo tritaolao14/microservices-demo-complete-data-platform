@@ -4,7 +4,7 @@ Tài liệu này liệt kê **các data engineering pattern đã áp dụng th�
 
 > **Quy tắc bắt buộc:** mỗi PR thay đổi hành vi data platform **phải cập nhật tài liệu này** trong cùng PR. Xem `AGENTS.md` → "Data Platform Documentation Rule".
 
-Cập nhật lần cuối: 2026-10-09 (sau DPFMD-36; thêm Iceberg table maintenance — expire_snapshots + compaction). Đối tác: `docs/data-platform.md`, `.agents/knowledge/data-engineering-design-patterns-index.md`.
+
 
 ## Chú giải trạng thái
 
@@ -159,6 +159,7 @@ Job `spark-bronze-orders` (DPFMD-35) bootstrap bảng Iceberg `my_catalog.bronze
 - **Driver**: `kubernetes-manifests/spark-bronze-orders.py` (ConfigMap `spark-bronze-orders-script`).
 - **Config**: đọc `spark-iceberg-config` ConfigMap (JDBC catalog `my_catalog` trên Postgres `product_catalog`, warehouse `s3a://iceberg-warehouse/`, `S3FileIO` MinIO, Hadoop `s3a` client cho Bronze source).
 - **Logic idempotent**: `CREATE TABLE IF NOT EXISTS` → kiểm tra `count(*)` → `INSERT INTO ... SELECT` từ `s3a://lakehouse/bronze/orders/` **chỉ khi bảng rỗng**. Re-run (ArgoCD sync) không duplicate.
+- **Bắt buộc `recursiveFileLookup=true`** khi đọc Bronze zone (`spark-bronze-orders.py:68`). Bronze partition theo `{yyyy}/{mm}/{dd}`; để Spark tự suy luận partition sẽ biến các segment số thành partition column, danh sách file thành rỗng và **fail `UNABLE_TO_INFER_SCHEMA` ở mọi thư mục cha** (chỉ leaf directory đọc được). Tắt suy luận thì cây thư mục thành tập file phẳng — không mất cột nào vì `_event_date` đã là cột thật bên trong Parquet. Trước khi sửa, lỗi này khiến Job **exit 0 với bảng rỗng** vì `try/except` nuốt exception — thành công giả, đã verify lại bằng data do chính writer DPFMD-34 sinh ra.
 - **Packages**: Iceberg 1.6.1 (`iceberg-spark-runtime-3.5_2.12`, `iceberg-aws-bundle`), Postgres 42.7.3, Hadoop AWS 3.3.4, AWS SDK 1.12.262 (resolve via `--packages` runtime, ivy cache `/tmp/ivy`).
 - **Verify E2E**: seed Bronze Parquet → run Job → Iceberg metadata trong Postgres (`iceberg_tables`) + data files trong `s3a://iceberg-warehouse/bronze/orders/` → `SELECT count(*) FROM my_catalog.bronze.orders` trả về số dòng đúng.
 
