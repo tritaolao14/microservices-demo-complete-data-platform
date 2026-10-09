@@ -28,6 +28,7 @@ resources:
 - loadgenerator.yaml
 - debezium.yaml
 - schema-registry.yaml
+- lakehouse-bronze-writer.yaml
 images:
 - name: adservice
   newName: ghcr.io/tritaolao14/adservice
@@ -47,6 +48,12 @@ images:
 - name: debezium
   newName: ghcr.io/tritaolao14/debezium
   newTag: ff1cf78ca35a9831e40be67186c7971822389575
+# Bronze Parquet writer; built by skaffold from src/data_processing.
+# Dev-only: the layers above it are still being finished, so running this in
+# staging/production would produce data nothing downstream consumes yet.
+- name: lakehouse
+  newName: ghcr.io/tritaolao14/lakehouse
+  newTag: 45483a962448f4a5fc8655ee4c5d16f99ede3755
 - name: emailservice
   newName: ghcr.io/tritaolao14/emailservice
   newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
