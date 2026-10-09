@@ -1,0 +1,87 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Bronze Parquet writer (DPFMD-34 code, deployed by DPFMD-46).
+#
+# This is the only component that drains the `orders` Kafka topic into the
+# Bronze landing zone. Without it nothing writes s3://lakehouse/bronze/orders/,
+# and the Iceberg load in spark-bronze-orders.yaml has an empty zone to read.
+#
+# A long-running consumer, hence Deployment rather than Job/CronJob.
+#
+# Credentials are the existing dev-cluster defaults used by the other manifests
+# (see kubernetes-manifests/minio.yaml). They are plaintext on purpose to match
+# the current dev setup -- TODO.md tracks moving to SealedSecret in Sprint 3.
+# Do not carry this pattern to any real environment.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lakehouse-bronze-writer
+  labels:
+    app: lakehouse-bronze-writer
+spec:
+  # Single replica on purpose. Scaling out splits the Kafka partitions between
+  # replicas, and each replica writes its own files into the same date
+  # partition. That is safe at the Parquet level but makes the per-day
+  # _manifest.json and _SUCCESS markers a read-modify-write across processes,
+  # and the writer has no cross-process coordination for it. Scale only after
+  # manifest writes become conditional (If-None-Match).
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lakehouse-bronze-writer
+  strategy:
+    # Recreate, not RollingUpdate. Two writers must never run at once: they
+    # would share a consumer group but race on the same date partition files
+    # and manifest. Recreate guarantees the old pod is gone first.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: lakehouse-bronze-writer
+    spec:
+      # SIGTERM lets the consumer finish its batch and flush buffered records to
+      # MinIO before exiting. The default 30s SIGKILL can truncate a flush.
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: writer
+        image: lakehouse
+        imagePullPolicy: IfNotPresent
+        command: ["python", "-m", "lakehouse.runner"]
+        env:
+        - name: KAFKA_BROKER
+          value: "kafka:9092"
+        - name: KAFKA_TOPIC
+          value: "orders"
+        - name: KAFKA_CONSUMER_GROUP
+          value: "bronze-orders-writer"
+        - name: MINIO_ENDPOINT
+          value: "http://minio:9000"
+        - name: MINIO_ACCESS_KEY
+          value: "admin"
+        - name: MINIO_SECRET_KEY
+          value: "admin123"
+        - name: LAKEHOUSE_BUCKET
+          value: "lakehouse"
+        # Start from the earliest offset so a fresh cluster picks up whatever
+        # is already in the topic rather than only new events.
+        - name: KAFKA_AUTO_OFFSET_RESET
+          value: "earliest"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi

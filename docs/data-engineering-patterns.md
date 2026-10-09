@@ -4,7 +4,7 @@ Tài liệu này liệt kê **các data engineering pattern đã áp dụng th�
 
 > **Quy tắc bắt buộc:** mỗi PR thay đổi hành vi data platform **phải cập nhật tài liệu này** trong cùng PR. Xem `AGENTS.md` → "Data Platform Documentation Rule".
 
-Cập nhật lần cuối: 2026-10-09 (sau DPFMD-35; thêm Iceberg bronze.orders table bootstrap + Spark Job). Đối tác: `docs/data-platform.md`, `.agents/knowledge/data-engineering-design-patterns-index.md`.
+Cập nhật lần cuối: 2026-10-09 (sau DPFMD-46; deploy Bronze writer — nối Kafka vào Bronze zone). Đối tác: `docs/data-platform.md`, `.agents/knowledge/data-engineering-design-patterns-index.md`.
 
 ## Chú giải trạng thái
 
@@ -32,7 +32,7 @@ Cập nhật lần cuối: 2026-10-09 (sau DPFMD-35; thêm Iceberg bronze.orders
 | 12 | Dimensional Modeling (một phần) | Đang chạy | `analytics.order_items` trong `seed_database.py:67` |
 | 13 | Object Storage / Data Lake | Đang chạy | `kubernetes-manifests/minio.yaml`, `src/data_processing/make_bucket_public.py`, `src/data_processing/lakehouse/sinks.py` |
 | 14 | Lakehouse / Iceberg Table Format | Đang chạy | `kubernetes-manifests/spark-iceberg-config.yaml`, `kubernetes-manifests/spark-bronze-orders.yaml`, `kubernetes-manifests/spark-bronze-orders.py` |
-| 14b | Bronze Layer Writer (Parquet + Manifest) | Đang chạy | `src/data_processing/lakehouse/` |
+| 14b | Bronze Layer Writer (Parquet + Manifest) | Đang chạy | `src/data_processing/lakehouse/`, `kubernetes-manifests/lakehouse-bronze-writer.yaml:23` |
 | 14c | Iceberg Bronze Orders Bootstrap Job | Đang chạy | `kubernetes-manifests/spark-bronze-orders.yaml:15`, `kubernetes-manifests/spark-bronze-orders.py:67` |
 | 15 | Orchestration (Airflow) | Chưa làm | roadmap Phase 3 |
 | 16 | Transformation (dbt / Star schema) | Chưa làm | roadmap Phase 3 |
@@ -146,7 +146,9 @@ Cấu trúc theo **Clean Architecture (Ports & Adapters)**: `domain/` (entity + 
 - Ports (Dependency Inversion): `ObjectSink`, `RecordEncoder` (`application/ports.py:16`, `application/ports.py:39`); adapter `Boto3Sink`/`InMemorySink` (`infrastructure/sinks.py`) và `ParquetEncoder` (`infrastructure/parquet_encoder.py`).
 - Idempotency: tên file `part-<sha256(content)[:16]>.parquet` + `Manifest.upsert` dedupe theo `path` ⇒ replay cùng batch không tạo file trùng (`application/writer.py:164`, `domain/manifest.py:54`).
 - Rollover file: `BRONZE_FLUSH_ROWS` (mặc định 50k), `BRONZE_TARGET_FILE_BYTES` (mặc định 128 MiB), `BRONZE_FLUSH_INTERVAL_SECONDS` (mặc định 60s) — `application/rollover.py`, `application/options.py`, `infrastructure/config.py`.
+- **Deployment** (`kubernetes-manifests/lakehouse-bronze-writer.yaml`): consumer chạy liên tục, `replicas: 1`, `strategy: Recreate` để không có 2 writer cùng ghi một partition ngày, `terminationGracePeriodSeconds: 60` để SIGTERM kịp flush buffer. Image `src/data_processing/Dockerfile` (python:3.12-slim, `requirements.txt` đã pin, chạy non-root uid 10001), build qua artifact `lakehouse` trong `skaffold.yaml`.
 - Đầu vào: Kafka topic `orders` (mặc định) hoặc file JSONL (`--input`) để dry-run; entrypoint `python -m lakehouse.runner` / `bronze_orders_writer.py` (`runner.py`).
+- **Đã deploy (DPFMD-46).** Trước đó writer chỉ tồn tại dưới dạng code — DPFMD-34 không kèm Dockerfile/Deployment/skaffold artifact — nên không ai consume topic `orders`: Kafka có 1221 message, consumer group chỉ có `dataingestion`, Bronze zone rỗng. Verify E2E sau khi deploy: topic đạt offset 1305 → `lakehouse/bronze/orders/2026/10/09/` có 2 file Parquet (1300 + 5 rows) + `_manifest.json` (2 entry) + `_SUCCESS`.
 - Đã verify E2E cục bộ: 3 event → 2 partition ngày (`2026/10/09`, `2026/10/10`), mỗi partition có Parquet + `_manifest.json` + `_SUCCESS`, đọc lại Parquet thấy đúng schema; 25 unit test (`pytest`, gồm roundtrip pyarrow) + ruff pass.
 - Phụ thuộc: `boto3`, `kafka-python`, `pyarrow` (`src/data_processing/requirements.in`).
 
