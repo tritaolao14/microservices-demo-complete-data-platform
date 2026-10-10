@@ -66,21 +66,55 @@ def run_kafka(
     auto_offset_reset: str = "latest",
     max_messages: int | None = None,
 ) -> int:
-    """Consume the Kafka topic and land each message until interrupted."""
-    from kafka import KafkaConsumer
+    """Consume the Kafka topic and land each message until interrupted.
+
+    Offsets are committed only once the records they cover are durably in the
+    Bronze zone. With ``enable_auto_commit=True`` the offset advanced the moment
+    a message was consumed, while the writer still held that message in memory
+    until rollover (60s / 50k rows / 128 MiB by default). A restart inside that
+    window lost the batch permanently: Kafka would not redeliver it because the
+    group offset had moved, and Bronze never received it.
+
+    Committing after the flush trades that for at-least-once delivery -- a crash
+    replays the buffered batch instead of dropping it. Replay is safe because
+    the Bronze writer names files by content hash, so rewritten rows land on the
+    same object rather than duplicating it.
+    """
+    from kafka import KafkaConsumer, TopicPartition
+    from kafka.structs import OffsetAndMetadata
 
     consumer = KafkaConsumer(
         topic,
         bootstrap_servers=broker,
         group_id=group_id,
         auto_offset_reset=auto_offset_reset,
-        enable_auto_commit=True,
+        enable_auto_commit=False,
         value_deserializer=lambda raw: json.loads(raw.decode("utf-8")),
     )
+
+    # Offset to commit next (Kafka semantics: last seen + 1) for each partition
+    # whose records are currently sitting in the writer's buffer. Emptied once
+    # a flush covering them has succeeded.
+    buffered: dict[tuple[str, int], int] = {}
     count = 0
+
+    def commit_durable() -> None:
+        """Advance the committed offsets to cover everything written so far."""
+        if not buffered:
+            return
+        # kafka-python 2.x takes all three positionally (offset, metadata,
+        # leader_epoch) with no defaults; 3.x gives the last two defaults.
+        consumer.commit(
+            {
+                TopicPartition(name, partition): OffsetAndMetadata(offset, None, -1)
+                for (name, partition), offset in buffered.items()
+            }
+        )
+        buffered.clear()
+
     try:
         for message in consumer:
-            writer.add(
+            flushed = writer.add(
                 message.value,
                 ingested_at=datetime.now(timezone.utc),
                 source=SourceRef(
@@ -89,11 +123,19 @@ def run_kafka(
                     offset=message.offset,
                 ),
             )
+            buffered[(message.topic, message.partition)] = message.offset + 1
             count += 1
+            # Non-empty result means a rollover committed those records; only
+            # now are the offsets covering them safe to acknowledge.
+            if flushed:
+                commit_durable()
             if max_messages is not None and count >= max_messages:
                 break
     finally:
+        # close() flushes whatever is left. If it raises, the offsets stay
+        # uncommitted and Kafka replays the batch on the next start.
         writer.close()
+        commit_durable()
         consumer.close()
     return count
 
