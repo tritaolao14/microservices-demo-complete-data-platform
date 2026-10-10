@@ -12,7 +12,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import sys
+import threading
 from datetime import datetime, timezone
 
 from lakehouse.application.ports import ObjectSink, RecordEncoder
@@ -21,6 +23,11 @@ from lakehouse.domain.records import SourceRef
 from lakehouse.infrastructure.config import BronzeConfig
 from lakehouse.infrastructure.parquet_encoder import ParquetEncoder
 from lakehouse.infrastructure.sinks import Boto3Sink
+
+# How long one poll may block. It bounds how late a shutdown can be noticed and
+# how late the rollover timer can be evaluated, since both are only checked
+# between polls.
+POLL_TIMEOUT_MS = 1000
 
 
 def build_writer(
@@ -79,6 +86,12 @@ def run_kafka(
     replays the buffered batch instead of dropping it. Replay is safe because
     the Bronze writer names files by content hash, so rewritten rows land on the
     same object rather than duplicating it.
+
+    The loop polls rather than iterating the consumer directly. ``add()`` is the
+    only place that evaluates the age-based rollover, so a plain
+    ``for message in consumer`` never checks that timer while the topic is quiet
+    and holds whatever it buffered indefinitely. Polling also gives the loop a
+    regular point at which a shutdown signal can be noticed.
     """
     from kafka import KafkaConsumer, TopicPartition
     from kafka.structs import OffsetAndMetadata
@@ -113,21 +126,33 @@ def run_kafka(
         buffered.clear()
 
     try:
-        for message in consumer:
-            flushed = writer.add(
-                message.value,
-                ingested_at=datetime.now(timezone.utc),
-                source=SourceRef(
-                    topic=message.topic,
-                    partition=message.partition,
-                    offset=message.offset,
-                ),
-            )
-            buffered[(message.topic, message.partition)] = message.offset + 1
-            count += 1
-            # Non-empty result means a rollover committed those records; only
-            # now are the offsets covering them safe to acknowledge.
-            if flushed:
+        while True:
+            for messages in consumer.poll(timeout_ms=POLL_TIMEOUT_MS).values():
+                for message in messages:
+                    flushed = writer.add(
+                        message.value,
+                        ingested_at=datetime.now(timezone.utc),
+                        source=SourceRef(
+                            topic=message.topic,
+                            partition=message.partition,
+                            offset=message.offset,
+                        ),
+                    )
+                    buffered[(message.topic, message.partition)] = message.offset + 1
+                    count += 1
+                    # Non-empty result means a rollover committed those records;
+                    # only now are the offsets covering them safe to acknowledge.
+                    if flushed:
+                        commit_durable()
+                    if max_messages is not None and count >= max_messages:
+                        break
+            # Checked on every poll, including an empty one. Iterating the
+            # consumer instead evaluated the rollover only inside add(), so a
+            # topic that went quiet kept its records buffered indefinitely and
+            # BRONZE_FLUSH_INTERVAL_SECONDS bounded nothing. The commit has to
+            # follow this flush too -- without it the records are written but
+            # the offsets stay unacknowledged, and get replayed on restart.
+            if writer.buffered_rows and writer.flush_if_needed():
                 commit_durable()
             if max_messages is not None and count >= max_messages:
                 break
@@ -159,21 +184,48 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _exit_on_sigterm(signum, _frame):
+    """Turn SIGTERM into an exception so ``finally`` blocks still run.
+
+    Python's default SIGTERM action ends the process immediately; ``finally``
+    blocks do not execute and any buffered records are lost from memory.
+    Kubernetes sends SIGTERM on pod deletion and waits
+    ``terminationGracePeriodSeconds`` before SIGKILL, so raising instead buys
+    that window real meaning: the writer flushes and the offsets are committed.
+    """
+    raise SystemExit(128 + signum)
+
+
+def _install_sigterm_handler():
+    """Handle SIGTERM for the duration of main(); returns a restore callable."""
+    if threading.current_thread() is not threading.main_thread():
+        # signal.signal only works on the main thread; tests call main() from
+        # the main thread so this is a guard, not an expected path.
+        return lambda: None
+    previous = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, _exit_on_sigterm)
+    return lambda: signal.signal(signal.SIGTERM, previous)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     config = BronzeConfig.from_env()
     writer = build_writer(config)
-    if args.input:
-        count = run_jsonl(args.input, writer)
-    else:
-        count = run_kafka(
-            writer,
-            args.broker,
-            args.topic,
-            args.group,
-            args.auto_offset_reset,
-            args.max_messages,
-        )
+    restore_sigterm = _install_sigterm_handler()
+    try:
+        if args.input:
+            count = run_jsonl(args.input, writer)
+        else:
+            count = run_kafka(
+                writer,
+                args.broker,
+                args.topic,
+                args.group,
+                args.auto_offset_reset,
+                args.max_messages,
+            )
+    finally:
+        restore_sigterm()
     print(
         f"Landed {count} record(s) to {config.bucket}/{config.writer.prefix}",
         file=sys.stderr,
