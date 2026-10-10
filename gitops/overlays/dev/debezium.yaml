@@ -263,10 +263,20 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: debezium-register
+  annotations:
+    # PostSync: the worker must be up before the connector config can be
+    # applied, and the Job waits for the REST API itself (wait_for_api). As a
+    # hook ArgoCD does not diff it, so the TTL deletion below no longer shows
+    # up as OutOfSync on every cycle -- see the note on ttlSecondsAfterFinished.
+    argocd.argoproj.io/hook: PostSync
   labels:
     app: debezium-connect
 spec:
   backoffLimit: 6
+  # ArgoCD deletes a successful PostSync hook itself. This is only a backstop
+  # for when the Job is applied outside ArgoCD (kubectl apply), so it cannot be
+  # mistaken for the reason the app used to flip to OutOfSync: hooks are not
+  # part of the diffed desired state.
   ttlSecondsAfterFinished: 600
   template:
     metadata:
