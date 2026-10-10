@@ -105,6 +105,7 @@ Cập nhật lần cuối: 2026-10-09 (sau DPFMD-49; khởi tạo topic nội b�
   `ConfigException: Topic '_debezium_connect_offsets' ... is required to have 'cleanup.policy=compact'`.
   Hậu quả khi thiếu: `/connectors/{name}/config` treo → `Job/debezium-register` timeout; CDC **dừng hẳn** (offset topic = 0 dù đã insert), generation Kafka group lên hơn 2,5 triệu (~14 rebalance/giây) trong khi pod vẫn `Running`. Job idempotent, chạy trên image `confluentinc/cp-kafka` (image debezium không có CLI `kafka-topics`), cảnh báo nếu topic tồn tại sai chuẩn.
 - `Job/debezium-register`: GET config thật → POST nếu chưa có → PUT nếu lệch git → chờ `RUNNING` → verify lại (`gitops/overlays/dev/debezium.yaml`).
+- **Retry lỗi transport** (DPFMD-50): `request()` thử lại 5 lần với backoff cho `URLError` / `TimeoutError` / `OSError` / `HTTPException`, rồi mới ném `Failed`. HTTP error (404…) **vẫn là giá trị trả về, không retry** vì 404 là nhánh bình thường. Trước đó một response chậm là `TimeoutError` thô bay ra ngoài, giết pod; pod restart, gặp lại response chậm, hết `backoffLimit` ⇒ **reconcile âm thầm dừng hẳn**. Giờ connector đó được báo chưa reconcile và connector còn lại vẫn xử lý.
 - Chỉ PUT khi thật sự drift (tránh restart task liên tục); Job fail khi drift ⇒ đóng vai trò monitoring.
 
 ## 10. GitOps — Đang chạy

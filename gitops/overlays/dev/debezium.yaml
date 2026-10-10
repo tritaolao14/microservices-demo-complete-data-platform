@@ -307,6 +307,7 @@ spec:
         args:
         - |
           import glob
+          import http.client
           import json
           import os
           import sys
@@ -318,28 +319,53 @@ spec:
           CONFIG_DIR = os.environ["CONFIG_DIR"]
           PASSWORD_KEY = "database.password"
           TIMEOUT_SECONDS = 300
+          # Transport-level retries per call. Five attempts with exponential
+          # backoff spans roughly a minute of a worker that is busy rebalancing,
+          # which is what the failure actually looked like.
+          CONNECT_ATTEMPTS = 5
 
           class Failed(Exception):
               """Per-connector failure, so one broken connector does not hide
               the state of the others."""
 
-          def request(method, path, payload=None):
+          def request(method, path, payload=None, attempts=CONNECT_ATTEMPTS):
               """Return (status, body). HTTP errors are values, not exceptions,
-              because 404 is a normal branch here."""
+              because 404 is a normal branch here.
+
+              Transport failures are retried instead of propagating. The worker
+              answers GET /status in milliseconds but GET /config can stall for
+              the whole socket timeout while it rebalances, and an unhandled
+              TimeoutError killed this Job outright -- the pod restarted, hit the
+              same slow response, and after backoffLimit the reconcile silently
+              stopped happening. Raising Failed instead means the connector is
+              reported as unreconciled and the other one still gets processed.
+              """
               data = json.dumps(payload).encode() if payload is not None else None
-              req = urllib.request.Request(
-                  CONNECT_URL + path, data=data, method=method,
-                  headers={"Content-Type": "application/json"})
-              try:
-                  with urllib.request.urlopen(req, timeout=30) as response:
-                      body = response.read()
-                      return response.status, (json.loads(body) if body else None)
-              except urllib.error.HTTPError as exc:
-                  body = exc.read()
+              last = None
+              for attempt in range(attempts):
+                  req = urllib.request.Request(
+                      CONNECT_URL + path, data=data, method=method,
+                      headers={"Content-Type": "application/json"})
                   try:
-                      return exc.code, (json.loads(body) if body else None)
-                  except ValueError:
-                      return exc.code, None
+                      with urllib.request.urlopen(req, timeout=30) as response:
+                          body = response.read()
+                          return response.status, (json.loads(body) if body else None)
+                  except urllib.error.HTTPError as exc:
+                      body = exc.read()
+                      try:
+                          return exc.code, (json.loads(body) if body else None)
+                      except ValueError:
+                          return exc.code, None
+                  except (urllib.error.URLError, TimeoutError, OSError,
+                          http.client.HTTPException) as exc:
+                      # TimeoutError and http.client.HTTPException are what a
+                      # read that never completes raises; urlopen does not wrap
+                      # them in URLError.
+                      last = exc
+                      if attempt + 1 < attempts:
+                          time.sleep(2 ** attempt)
+              raise Failed("%s %s failed after %d attempts (%s)"
+                           % (method, path, attempts, last))
 
           def fail(message):
               raise Failed(message)
