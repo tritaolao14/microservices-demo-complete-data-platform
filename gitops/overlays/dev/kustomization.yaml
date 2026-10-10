@@ -27,6 +27,7 @@ resources:
 - pgadmin.yaml
 - loadgenerator.yaml
 - debezium.yaml
+- debezium-init-topics.yaml
 - schema-registry.yaml
 - lakehouse-bronze-writer.yaml
 images:

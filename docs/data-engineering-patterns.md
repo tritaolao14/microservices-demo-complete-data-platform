@@ -4,7 +4,7 @@ Tài liệu này liệt kê **các data engineering pattern đã áp dụng th�
 
 > **Quy tắc bắt buộc:** mỗi PR thay đổi hành vi data platform **phải cập nhật tài liệu này** trong cùng PR. Xem `AGENTS.md` → "Data Platform Documentation Rule".
 
-Cập nhật lần cuối: 2026-10-09 (sau DPFMD-49; flush theo timer khi topic rảnh + flush khi nhận SIGTERM). Đối tác: `docs/data-platform.md`, `.agents/knowledge/data-engineering-design-patterns-index.md`.
+Cập nhật lần cuối: 2026-10-09 (sau DPFMD-49; khởi tạo topic nội bộ Kafka Connect đúng chuẩn trước khi worker start). Đối tác: `docs/data-platform.md`, `.agents/knowledge/data-engineering-design-patterns-index.md`.
 
 
 ## Chú giải trạng thái
@@ -27,7 +27,7 @@ Cập nhật lần cuối: 2026-10-09 (sau DPFMD-49; flush theo timer khi topic 
 | 6 | Retry + Circuit Breaker (in-memory backoff) | Đang chạy | `infrastructure/kafka_retry_producer.py`, `postgres_writer.py:87` |
 | 7 | Change Data Capture (CDC) | Đang chạy | `gitops/overlays/dev/debezium.yaml`, `scripts/e2e-cdc.sh`, `docs/data-platform.md:39` |
 | 8 | Schema Registry / Data Contract (Avro) | Đang chạy | `gitops/overlays/dev/schema-registry.yaml`, `src/debezium/` |
-| 9 | Declarative Config Reconciliation (drift) | Đang chạy | `Job/debezium-register` trong `gitops/overlays/dev/debezium.yaml` |
+| 9 | Declarative Config Reconciliation (drift) | Đang chạy | `Job/debezium-init-topics`, `Job/debezium-register` trong `gitops/overlays/dev/debezium.yaml` |
 | 10 | GitOps (ArgoCD + Kustomize overlays) | Đang chạy | `gitops/overlays/{dev,staging,production}` |
 | 11 | Full / Incremental Batch Load + Upsert | Đang chạy | `src/data_processing/seed_database.py` |
 | 12 | Dimensional Modeling (một phần) | Đang chạy | `analytics.order_items` trong `seed_database.py:67` |
@@ -101,6 +101,9 @@ Cập nhật lần cuối: 2026-10-09 (sau DPFMD-49; flush theo timer khi topic 
 
 ## 9. Declarative Config Reconciliation — Đang chạy
 
+- `Job/debezium-init-topics` (DPFMD-49): tạo 3 topic nội bộ của Kafka Connect (`_debezium_connect_configs/_offsets/_statuses`) với `cleanup.policy=compact` và đúng số partition (1/25/5) **trước khi** worker start. Broker chạy `auto.create.topics.enable=true` (cần cho `dataingestion`), nên ai hỏi topic trước cũng tạo được — nhưng broker tạo với `cleanup.policy=delete` và 1 partition, còn Connect thì **từ chối start**:
+  `ConfigException: Topic '_debezium_connect_offsets' ... is required to have 'cleanup.policy=compact'`.
+  Hậu quả khi thiếu: `/connectors/{name}/config` treo → `Job/debezium-register` timeout; CDC **dừng hẳn** (offset topic = 0 dù đã insert), generation Kafka group lên hơn 2,5 triệu (~14 rebalance/giây) trong khi pod vẫn `Running`. Job idempotent, chạy trên image `confluentinc/cp-kafka` (image debezium không có CLI `kafka-topics`), cảnh báo nếu topic tồn tại sai chuẩn.
 - `Job/debezium-register`: GET config thật → POST nếu chưa có → PUT nếu lệch git → chờ `RUNNING` → verify lại (`gitops/overlays/dev/debezium.yaml`).
 - Chỉ PUT khi thật sự drift (tránh restart task liên tục); Job fail khi drift ⇒ đóng vai trò monitoring.
 
