@@ -60,15 +60,30 @@ class FakeOffsetAndMetadata:
 
 
 class FakeConsumer:
-    """Yields a fixed message list and records every commit."""
+    """Yields a fixed message list through poll() and records every commit.
+
+    ``run_kafka`` polls rather than iterating, so the fake mirrors that. The
+    first poll returns every message, later polls return nothing, which models
+    an idle topic. Tests bound the loop with ``max_messages``.
+    """
 
     def __init__(self, messages):
-        self._messages = messages
+        self._messages = list(messages)
+        self._sent = False
         self.commits = []
         self.closed = False
+        self.polls = 0
 
-    def __iter__(self):
-        return iter(self._messages)
+    @property
+    def message_count(self) -> int:
+        return len(self._messages)
+
+    def poll(self, timeout_ms=None):
+        self.polls += 1
+        if self._sent or not self._messages:
+            return {}
+        self._sent = True
+        return {FakeTopicPartition("orders", 0): list(self._messages)}
 
     def commit(self, offsets):
         self.commits.append(dict(offsets))
@@ -114,6 +129,10 @@ def msgs(n, partition=0):
 
 
 def run(writer, consumer, **kwargs):
+    # The consume loop is infinite in production, by design. max_messages is
+    # the only thing that bounds it in a test, so default to exactly the
+    # messages the fake will hand over.
+    kwargs.setdefault("max_messages", max(1, consumer.message_count))
     return run_kafka(writer, "broker:9092", "orders", "test-group", **kwargs)
 
 
