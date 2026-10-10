@@ -49,7 +49,7 @@ build:
     context: src/adservice
   - image: dataingestion
     context: src/dataingestion
-  - image: lakehouse
+  - image: data_processing
     context: src/data_processing
     docker:
       dockerfile: Dockerfile

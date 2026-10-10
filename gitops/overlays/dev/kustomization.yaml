@@ -48,12 +48,17 @@ images:
 - name: debezium
   newName: ghcr.io/tritaolao14/debezium
   newTag: ff1cf78ca35a9831e40be67186c7971822389575
-# Bronze Parquet writer; built by skaffold from src/data_processing.
-# Dev-only: the layers above it are still being finished, so running this in
-# staging/production would produce data nothing downstream consumes yet.
-- name: lakehouse
-  newName: ghcr.io/tritaolao14/lakehouse
-  newTag: 45483a962448f4a5fc8655ee4c5d16f99ede3755
+# Bronze Parquet writer. Dev-only: the layers above it are still being
+# finished, so running this in staging/production would produce data that
+# nothing downstream consumes yet.
+#
+# The image is named after the src/ directory, not after what it does, because
+# dev-ci derives the service name from the changed path and builds it as
+# src/<name>/Dockerfile. Calling it "lakehouse" here would leave dev-ci unable
+# to build it and the tag below permanently unresolvable.
+- name: data_processing
+  newName: ghcr.io/tritaolao14/data_processing
+  newTag: 4059ad06a18700f97c3928fe99fc55c98cf61dcd
 - name: emailservice
   newName: ghcr.io/tritaolao14/emailservice
   newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
