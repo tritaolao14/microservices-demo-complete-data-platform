@@ -66,9 +66,12 @@ jobs:
             | sort -u)
 
           # Allowlist: only services with an image in the gitops overlay.
-          # shoppingassistantservice, loadgenerator, data_processing are
-          # excluded (not in gitops stack).
-          ALLOWLIST="adservice cartservice checkoutservice currencyservice debezium dataingestion emailservice frontend paymentservice productcatalogservice recommendationservice shippingservice"
+          # shoppingassistantservice and loadgenerator are excluded (not in the
+          # gitops stack). data_processing was excluded for the same reason
+          # until the dev overlay gained the Bronze writer Deployment
+          # (DPFMD-46); it is now the image for that writer, built from
+          # src/data_processing/Dockerfile.
+          ALLOWLIST="adservice cartservice checkoutservice currencyservice data_processing debezium dataingestion emailservice frontend paymentservice productcatalogservice recommendationservice shippingservice"
 
           SERVICES=""
           for svc in $CHANGED; do

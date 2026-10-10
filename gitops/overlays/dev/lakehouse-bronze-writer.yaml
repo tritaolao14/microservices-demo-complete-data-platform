@@ -56,7 +56,7 @@ spec:
       terminationGracePeriodSeconds: 60
       containers:
       - name: writer
-        image: lakehouse
+        image: data_processing
         imagePullPolicy: IfNotPresent
         command: ["python", "-m", "lakehouse.runner"]
         env:
