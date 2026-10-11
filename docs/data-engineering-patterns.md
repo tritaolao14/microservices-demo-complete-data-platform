@@ -4,7 +4,7 @@ Tài liệu này liệt kê **các data engineering pattern đã áp dụng th�
 
 > **Quy tắc bắt buộc:** mỗi PR thay đổi hành vi data platform **phải cập nhật tài liệu này** trong cùng PR. Xem `AGENTS.md` → "Data Platform Documentation Rule".
 
-Cập nhật lần cuối: 2026-10-09 (sau DPFMD-49; khởi tạo topic nội bộ Kafka Connect đúng chuẩn trước khi worker start). Đối tác: `docs/data-platform.md`, `.agents/knowledge/data-engineering-design-patterns-index.md`.
+Cập nhật lần cuối: 2026-10-10 (DPFMD-51; Job dạng `PostSync` hook để hết dao động OutOfSync do TTL).
 
 
 ## Chú giải trạng thái
@@ -112,6 +112,10 @@ Cập nhật lần cuối: 2026-10-09 (sau DPFMD-49; khởi tạo topic nội b�
 
 - ArgoCD `Application/dev` với `prune` + `selfHeal` + `CreateNamespace`; Kustomize overlays `dev` / `staging` / `production`.
 - CI build kustomize cho cả 3 overlay (`.github/workflows/pre-pr.yaml`).
+- **Job trong overlay không được TTL đứng độc lập.** `ttlSecondsAfterFinished` xoá Job sau khi xong, còn ArgoCD vẫn muốn resource đó tồn tại ⇒ app `OutOfSync` trong khoảng ~60s mỗi chu kỳ TTL rồi tự tạo lại. Với 3 Job cùng TTL 600s lệch pha, app `OutOfSync` ~27% thời gian — không bao giờ ổn định, dù `HEALTH=Healthy`.
+  - `Job/debezium-register` và `Job/kafka-create-topic` dùng `argocd.argoproj.io/hook: PostSync` ⇒ ArgoCD không diff chúng, không còn vòng lặp TTL. Cả hai đều có vòng chờ riêng (`wait_for_api` trên REST API Connect; `kafka-broker-api-versions` trên broker) nên an toàn khi chạy PostSync.
+  - `Job/debezium-init-topics` **cố ý không dùng hook**: phải tạo topic nội bộ *trước khi* worker Kafka Connect khởi động (PostSync chạy sau ⇒ worker đã tự tạo topic sai với `cleanup.policy=delete`). Cần initContainer trong `Deployment/debezium-connect`, chưa làm.
+  - `ttlSecondsAfterFinished` còn lại chỉ là backstop khi `kubectl apply` tay ngoài ArgoCD; hook thành công bị ArgoCD tự xoá.
 
 ## 11. Full / Incremental Batch Load + Upsert — Đang chạy
 
