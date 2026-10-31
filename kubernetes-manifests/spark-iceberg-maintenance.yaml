@@ -17,6 +17,9 @@
 # The ticket asked for Delta Lake "VACUUM 7d"; Iceberg has no VACUUM, so the
 # driver maps that intent onto expire_snapshots / rewrite_data_files /
 # remove_orphan_files. See spark-iceberg-maintenance.py for the full mapping.
+# The same driver enforces age-based retention: Bronze rows older than 90d are
+# deleted, and landing-zone Parquet is pruned 30d after it was loaded (tracked
+# in bronze.ingest_state, so unsynced files are never touched).
 #
 # Lives in the base manifests so all three overlays (dev/staging/production)
 # inherit it, the same way spark-bronze-orders.yaml does. ArgoCD syncs each
@@ -65,6 +68,18 @@ spec:
             # been reviewed.
             - name: ICEBERG_ORPHAN_DRY_RUN
               value: "true"
+            # Raw zone (landing Parquet + Kafka topic) keeps 30d; Bronze
+            # Iceberg keeps 90d -- the ticket's 30d/90d mapped onto the layers
+            # this repo actually has. Landing files are only deleted once
+            # ingest_state proves they reached Iceberg.
+            - name: RAW_RETENTION_DAYS
+              value: "30"
+            - name: BRONZE_RETENTION_DAYS
+              value: "90"
+            # Set to "true" to report landing-zone prune candidates without
+            # deleting them.
+            - name: RAW_PRUNE_DRY_RUN
+              value: "false"
             args:
             - "--master"
             - "local[2]"
