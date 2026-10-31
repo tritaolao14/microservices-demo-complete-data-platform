@@ -72,6 +72,11 @@ data:
     s3.path-style-access=true
     s3.aws-access-key=admin
     s3.aws-secret-key=admin123
+  postgres.properties: |
+    connector.name=postgresql
+    connection-url=jdbc:postgresql://postgres:5432/product_catalog
+    connection-user=boutique
+    connection-password=boutique_pass
 ---
 apiVersion: apps/v1
 kind: Deployment

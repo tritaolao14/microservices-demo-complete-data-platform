@@ -58,7 +58,10 @@ The project has a partial data platform implementation with foundational infrast
       làm task `RUNNING` nhưng slot không active và không có event
 - [ ] Setup Data Warehouse
   - [x] Configure Trino or ClickHouse for data querying (Trino 476 + Iceberg JDBC catalog, DPFMD-37)
-  - [ ] Set up dbt for data transformation
+  - [x] Set up dbt for data transformation (DPFMD-38)
+    - Project `src/data_processing/dbt`: `stg_orders_items` (silver) → `fact_orders_items` (gold), grain `(order_id, product_id)`
+    - `dbt build` PASS=26 (2 models + 24 tests); reconcile `analytics.order_items` window 2026-10-11..2026-10-15 = 67.013 dòng
+    - CronJob `dbt-build` trong `gitops/overlays/dev/dbt.yaml`, chạy sau Bronze sync
 - [ ] Deploy BI Dashboard
   - [ ] Install Apache Superset or Metabase
   - [ ] Configure connections to data warehouse
