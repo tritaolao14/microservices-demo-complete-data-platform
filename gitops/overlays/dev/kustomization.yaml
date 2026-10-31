@@ -29,6 +29,7 @@ resources:
 - debezium.yaml
 - schema-registry.yaml
 - lakehouse-bronze-writer.yaml
+- dbt.yaml
 images:
 - name: adservice
   newName: ghcr.io/tritaolao14/adservice

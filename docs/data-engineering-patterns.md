@@ -4,7 +4,7 @@ Tài liệu này liệt kê **các data engineering pattern đã áp dụng th�
 
 > **Quy tắc bắt buộc:** mỗi PR thay đổi hành vi data platform **phải cập nhật tài liệu này** trong cùng PR. Xem `AGENTS.md` → "Data Platform Documentation Rule".
 
-Cập nhật lần cuối: 2026-10-31 (DPFMD-37 + sửa AC DPFMD-28: Trino single-node với Iceberg JDBC catalog; chốt reconciliation contract Bronze ↔ `analytics.order_items` theo grain order-item và complete window thay cho baseline 760; trước đó DPFMD-36 chuyển Bronze→Iceberg sang sync định kỳ có watermark `ingest_state`, thêm `bucket(16, order_id)`, retention raw 30d / bronze 90d).
+Cập nhật lần cuối: 2026-10-31 (DPFMD-38: dbt project `src/data_processing/dbt` build staging → marts, `dbt build` PASS=26; `fact_orders_items` grain order-item reconcile với `analytics.order_items` window 2026-10-11..2026-10-15 = 67.013 dòng, diff=0; Trino thêm catalog `postgres` cho reconcile; trước đó DPFMD-37 deploy Trino + Iceberg JDBC catalog, DPFMD-28 chốt reconciliation contract theo grain order-item thay cho baseline 760).
 
 
 ## Chú giải trạng thái
@@ -37,7 +37,7 @@ Cập nhật lần cuối: 2026-10-31 (DPFMD-37 + sửa AC DPFMD-28: Trino singl
 | 14c | Iceberg Bronze Incremental Sync (watermark `ingest_state`) | Đang chạy | `kubernetes-manifests/spark-bronze-orders.yaml:20`, `kubernetes-manifests/spark-bronze-orders.py:278` |
 | 14d | Iceberg Maintenance + Retention (7d snapshot / 90d bronze / 30d raw) | Đang chạy | `kubernetes-manifests/spark-iceberg-maintenance.py:113`, `kubernetes-manifests/spark-iceberg-maintenance.py:140` |
 | 15 | Orchestration (Airflow) | Chưa làm | roadmap Phase 3 |
-| 16 | Transformation (dbt / Star schema) | Chưa làm | roadmap Phase 3 |
+| 16 | Transformation (dbt / Star schema — staging + fact) | Đang chạy | `src/data_processing/dbt/`, `models/staging/stg_orders_items.sql`, `models/marts/fact_orders_items.sql`, `tests/assert_fact_matches_postgres.sql` |
 | 17 | Serving / Query Layer (Trino + Iceberg JDBC catalog) | Đang chạy | `kubernetes-manifests/trino.yaml`, `kubernetes-manifests/kustomization.yaml:33` |
 | 18 | BI / Visualization | Chưa làm | roadmap Phase 4 |
 | 19 | Security & Governance (secrets, auth) | Chưa làm | `TODO.md` Sprint 3 |
@@ -249,21 +249,36 @@ AC ban đầu của DPFMD-28 ("Trino `count(*) iceberg.bronze.orders` == Postgre
   );
   ```
   Kỳ vọng `67013`; đối chiếu `SELECT count(*) FROM analytics.order_items WHERE event_timestamp::date BETWEEN '2026-10-11' AND '2026-10-15';`.
+- **Thực thi trong dbt**: `src/data_processing/dbt/tests/assert_fact_matches_postgres.sql` hiện thực hoá contract này — `dbt build` fail nếu `item_count`, `unit_count` hoặc `revenue` lệch `postgres.analytics.order_items`, hoặc `item_count ≠ 67013`. Lần verify 2026-10-31 test PASS.
+
+## 16. Transformation (dbt) — Đang chạy (staging + fact; chưa full star schema)
+
+dbt project `src/data_processing/dbt` (dbt-core 1.10.23 + dbt-trino 1.10.6) biến đổi Bronze Iceberg thành Silver/Gold và chạy test data quality trong cùng một lệnh `dbt build`:
+
+- **Project**: `dbt_project.yml` (staging `+schema: silver`, marts `+schema: gold`, materialized `table`), `profiles.yml` (Trino catalog `iceberg`, host `trino:8080`, method `none`), macro `macros/generate_schema_name.sql` để `+schema` thắng `target.schema`.
+- **Staging** (`models/staging/stg_orders_items.sql`): `source('bronze','orders')` → `CROSS JOIN UNNEST(CAST(json_extract(raw, '$.items') AS array(json)))` để hạ grain từ order event xuống order item; parse `$.item.product_id`, `$.item.quantity`, `$.cost.{currency_code,units,nanos}`, `raw.timestamp`; dedupe `(order_id, product_id)` bằng `row_number()` theo `_ingested_at, _kafka_partition, _kafka_offset` (giữ bản ghi mới nhất), khớp PK `analytics.order_items`.
+- **Mart** (`models/marts/fact_orders_items.sql`): fact grain `(order_id, product_id)`, `unit_price = units + nanos/1e9`, `total_price = quantity * unit_price`, kèm `event_timestamp`, `event_date`, `status = 'SUCCEED'`.
+- **Data tests**: `not_null` + `accepted_values` trong `models/{staging,marts}/schema.yml`; `tests/assert_fact_orders_items_unique.sql` (không có cặp `(order_id, product_id)` trùng); `tests/assert_fact_matches_postgres.sql` reconcile với `postgres.analytics.order_items` trong window `2026-10-11..2026-10-15`.
+- **Chạy**: `CronJob/dbt-build` (`gitops/overlays/dev/dbt.yaml`) chạy `dbt build` lúc `50 * * * *`, sau Bronze sync `:37`; đọc Trino trên cluster, ghi `iceberg.silver` / `iceberg.gold`. Image `src/data_processing/Dockerfile` cài dbt trong venv riêng `/opt/dbt` để không xung đột pin của writer.
+- **Verify (kind-ci-local, 2026-10-31)**: `dbt build` → **PASS=26** (2 models + 24 tests), 0 error; `iceberg.gold.fact_orders_items` = 84.600 dòng tổng, window `2026-10-11..2026-10-15` = **67.013** (khớp Postgres, diff=0); `sum(quantity)=451.674`, `sum(total_price)=336.524.180,88`.
+- **Giới hạn**: mới có grain order-item; chưa có bảng dimension / full star schema và chưa có orchestration upstream (drain Bronze backlog) — thuộc Phase 3–4.
 
 ## 17. Serving / Query Layer — Trino + Iceberg JDBC catalog — Đang chạy
 
 Trino 476 single-node đọc trực tiếp bảng Iceberg do Spark ghi, không cần Hive Metastore hay REST catalog:
 
-- **Manifest**: `kubernetes-manifests/trino.yaml` — ConfigMap `trino-config` (`config.properties`, `node.properties`, `jvm.config`), ConfigMap `trino-catalog` (`iceberg.properties`), `Deployment/trino` và `Service/trino:8080`; khai báo trong base `kubernetes-manifests/kustomization.yaml:33` nên mọi overlay đều có.
+- **Manifest**: `kubernetes-manifests/trino.yaml` — ConfigMap `trino-config` (`config.properties`, `node.properties`, `jvm.config`), ConfigMap `trino-catalog` (`iceberg.properties`, `postgres.properties`), `Deployment/trino` và `Service/trino:8080`; khai báo trong base `kubernetes-manifests/kustomization.yaml:33` nên mọi overlay đều có.
 - **Catalog**: `iceberg.catalog.type=jdbc` trỏ vào Postgres `product_catalog` — đúng database Spark đang dùng. `iceberg.jdbc-catalog.catalog-name=my_catalog` **bắt buộc** khớp `iceberg_tables.catalog_name` do Spark ghi; đổi tên sẽ khiến mọi bảng Spark tạo trở nên vô hình. `default-warehouse-dir=s3a://iceberg-warehouse/` giữ nguyên scheme `s3a` mà Spark đã ghi trong metadata.
 - **MinIO**: `fs.native-s3.enabled=true` + `s3.endpoint=http://minio:9000`, path-style; Trino native S3 đọc được location `s3a://` của bảng nên không cần Hadoop S3A.
 - **JDBC catalog schema**: `iceberg_tables` do Iceberg 1.6.1 (Spark) tạo tương thích với schema-version mặc định V1 của Trino; không cần migrate.
-- **Verify E2E (kind-ci-local)**: pod `1/1 Running`, `SHOW SCHEMAS FROM iceberg` → `bronze`; `SHOW TABLES FROM iceberg.bronze` → `ingest_state`, `orders`; `SELECT count(*) FROM iceberg.bronze.orders` = **34.294** (đúng số dòng Iceberg tại thời điểm verify); `SELECT count(*) ... WHERE _event_date = DATE '2026-10-10'` = **4.728**, khớp kết quả Spark; `SHOW CREATE TABLE` trả về `partitioning = ARRAY['day(_event_date)','bucket(order_id, 16)']`, `location = 's3a://iceberg-warehouse/bronze/orders'`.
-- **Giới hạn hiện tại**: 1 coordinator, chưa HA; credentials nằm trong ConfigMap (cùng pattern với Postgres/Spark, xử lý ở Sprint 3); chưa cấu hình catalog Postgres để federate trực tiếp — AC so sánh count của DPFMD-28 sẽ làm bằng hai client (Trino vs psql).
+- **Verify E2E (kind-ci-local)**: pod `1/1 Running`, `SHOW CATALOGS` → `iceberg`, `postgres`, `system`; `SHOW SCHEMAS FROM iceberg` → `bronze`; `SHOW TABLES FROM iceberg.bronze` → `ingest_state`, `orders`; `SELECT count(*) FROM iceberg.bronze.orders` = **34.294** (đúng số dòng Iceberg tại thời điểm verify DPFMD-37); `SELECT count(*) ... WHERE _event_date = DATE '2026-10-10'` = **4.728**, khớp kết quả Spark; `SHOW CREATE TABLE` trả về `partitioning = ARRAY['day(_event_date)','bucket(order_id, 16)']`, `location = 's3a://iceberg-warehouse/bronze/orders'`.
+- **Catalog `postgres`**: `postgres.properties` trỏ thẳng vào `product_catalog` (cùng instance, user `boutique`) để dbt và truy vấn tay đọc được `postgres.analytics.order_items`; đây là reference cho reconcile ở mục 14e, không phải dependency runtime của pipeline.
+- **Giới hạn hiện tại**: 1 coordinator, chưa HA; credentials nằm trong ConfigMap (cùng pattern với Postgres/Spark, xử lý ở Sprint 3).
 
-## 15, 16, 18. Chưa làm
+## 15, 18. Chưa làm
 
-- **Orchestration (Airflow)**, **Transformation (dbt + Star schema)**, **BI (Superset/Metabase)** — thuộc Phase 3–4 trong `docs/data-platform.md`.
+- **Orchestration (Airflow)**, **BI (Superset/Metabase)** — thuộc Phase 3–4 trong `docs/data-platform.md`.
+- **Transformation**: đã có staging + fact ở mục 16; full star schema (dimension, bridge) vẫn còn thiếu.
 - **Security & Governance** (SealedSecret, Schema Registry auth, mã hoá config topic) — Sprint 3 trong `TODO.md`.
 
 ---
@@ -280,10 +295,10 @@ Trino 476 single-node đọc trực tiếp bảng Iceberg do Spark ghi, không c
 | Ch.5 Data Value | Metadata Decorator (cột metadata Bronze — `lakehouse/infrastructure/parquet_encoder.py`) |
 | Ch.6 Data Flow | Proxy / Readiness Marker (`_SUCCESS` — `lakehouse/application/writer.py`) |
 | Ch.8 Data Storage | Horizontal Partitioner (date `yyyy/mm/dd`), Manifest (`_manifest.json`) — `src/data_processing/lakehouse/`; Iceberg `days(_event_date)` + `bucket(16, order_id)` |
-| Ch.9 Data Quality | Schema Enforcer (Avro registry), một phần Gatekeeper (`validate_order`) |
+| Ch.9 Data Quality | Schema Enforcer (Avro registry), một phần Gatekeeper (`validate_order`), dbt data tests + reconcile test (`src/data_processing/dbt/tests/`) |
 | Ch.10 Observability | Offline Observer (reconcile Job = drift detection) |
 
-**Gap chính:** Windowed Deduplicator, AWAP, Full Star schema (dbt), Hybrid Consumer, Z-Order.
+**Gap chính:** Windowed Deduplicator, AWAP, full Star schema (dbt mới có staging + fact), Hybrid Consumer, Z-Order.
 
 ---
 

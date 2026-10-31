@@ -1,0 +1,55 @@
+# dbt runs hourly after the Bronze sync (:37) so new files have landed before
+# the models are rebuilt. It reads Trino on the cluster and writes the silver
+# and gold Iceberg schemas. The project and dbt virtualenv are baked into the
+# data_processing image (src/data_processing/dbt).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dbt-build
+  labels:
+    app: dbt-build
+spec:
+  schedule: "50 * * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: dbt-build
+        spec:
+          restartPolicy: Never
+          imagePullSecrets:
+          - name: ghcr-secret
+          containers:
+          - name: dbt
+            image: data_processing
+            imagePullPolicy: IfNotPresent
+            command:
+            - /opt/dbt/bin/dbt
+            - build
+            - --project-dir
+            - /opt/dbt/project
+            - --profiles-dir
+            - /opt/dbt/project
+            - --target-path
+            - /tmp/dbt-target
+            - --log-path
+            - /tmp/dbt.log
+            env:
+            - name: TRINO_HOST
+              value: "trino"
+            - name: TRINO_PORT
+              value: "8080"
+            - name: TRINO_CATALOG
+              value: "iceberg"
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                memory: 1Gi

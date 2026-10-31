@@ -1,0 +1,23 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: Iceberg Bronze events written by the spark-bronze-orders CronJob.
+    database: iceberg
+    schema: bronze
+    tables:
+      - name: orders
+        description: One row per order event; the nested items live in raw.
+        columns:
+          - name: order_id
+            data_tests:
+              - not_null
+          - name: raw
+            data_tests:
+              - not_null
+          - name: _event_date
+            data_tests:
+              - not_null
+          - name: _ingested_at
+            data_tests:
+              - not_null

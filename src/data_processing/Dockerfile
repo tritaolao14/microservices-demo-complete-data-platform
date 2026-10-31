@@ -31,6 +31,13 @@ RUN pip install --no-cache-dir --only-binary=:all: -r requirements.txt
 COPY lakehouse ./lakehouse
 COPY bronze_orders_writer.py ./
 
+# dbt lives in its own virtualenv so its dependency graph cannot move the
+# writer's pins. The project is baked in; the CronJob only overrides the command.
+RUN python -m venv /opt/dbt \
+ && /opt/dbt/bin/pip install --no-cache-dir "dbt-trino==1.10.6"
+
+COPY dbt /opt/dbt/project
+
 # The base image runs as root; this service only needs outbound network and a
 # writable /tmp, so drop privileges rather than running the consumer as root.
 RUN useradd --create-home --uid 10001 appuser \

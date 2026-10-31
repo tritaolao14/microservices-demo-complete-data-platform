@@ -1,0 +1,21 @@
+name: onlineboutique_analytics
+version: "1.0.0"
+config-version: 2
+profile: onlineboutique_analytics
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+
+clean-targets:
+  - target
+  - dbt_packages
+
+models:
+  onlineboutique_analytics:
+    staging:
+      +schema: silver
+      +materialized: table
+    marts:
+      +schema: gold
+      +materialized: table

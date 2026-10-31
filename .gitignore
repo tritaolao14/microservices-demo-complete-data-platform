@@ -39,3 +39,8 @@ src/*/paymentservice
 src/*/currencyservice
 src/*/adservice
 src/*/frontend
+# dbt runtime artifacts (src/data_processing/dbt)
+src/data_processing/dbt/target/
+src/data_processing/dbt/logs/
+src/data_processing/dbt/dbt_packages/
+src/data_processing/dbt/.user.yml

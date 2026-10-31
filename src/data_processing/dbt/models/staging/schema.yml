@@ -1,0 +1,30 @@
+version: 2
+
+models:
+  - name: stg_orders_items
+    description: One row per (order_id, product_id), deduplicated from raw.items.
+    columns:
+      - name: order_id
+        data_tests:
+          - not_null
+      - name: product_id
+        data_tests:
+          - not_null
+      - name: quantity
+        data_tests:
+          - not_null
+      - name: currency_code
+        data_tests:
+          - not_null
+      - name: event_timestamp
+        data_tests:
+          - not_null
+      - name: event_date
+        data_tests:
+          - not_null
+      - name: status
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["SUCCEED", "CANCELLED"]

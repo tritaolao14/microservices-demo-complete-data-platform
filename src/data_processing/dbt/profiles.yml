@@ -1,0 +1,13 @@
+onlineboutique_analytics:
+  target: dev
+  outputs:
+    dev:
+      type: trino
+      method: none
+      user: "{{ env_var('TRINO_USER', 'dbt') }}"
+      host: "{{ env_var('TRINO_HOST', 'trino') }}"
+      port: "{{ env_var('TRINO_PORT', '8080') | int }}"
+      http_scheme: "{{ env_var('TRINO_HTTP_SCHEME', 'http') }}"
+      catalog: "{{ env_var('TRINO_CATALOG', 'iceberg') }}"
+      schema: dbt
+      threads: 2
