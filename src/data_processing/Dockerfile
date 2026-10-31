@@ -38,6 +38,15 @@ RUN python -m venv /opt/dbt \
 
 COPY dbt /opt/dbt/project
 
+# Great Expectations gets a third virtualenv for the same reason: its SQLAlchemy
+# and pandas dependency graph is large and must not move the writer's or dbt's
+# pins. The checkpoint build logs are the Job's only output.
+COPY great_expectations/requirements.txt /tmp/ge-requirements.txt
+RUN python -m venv /opt/ge \
+ && /opt/ge/bin/pip install --no-cache-dir -r /tmp/ge-requirements.txt
+
+COPY great_expectations /opt/ge/project
+
 # The base image runs as root; this service only needs outbound network and a
 # writable /tmp, so drop privileges rather than running the consumer as root.
 RUN useradd --create-home --uid 10001 appuser \

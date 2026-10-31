@@ -1,0 +1,5 @@
+# Minimal GX Core file-context config. The datasources, expectation suites and
+# the checkpoint are built in run_checkpoint.py so the contract lives next to
+# the pipeline code. Each run copies this file into a temporary project root so
+# validation artifacts never dirty the working tree.
+config_version: 1

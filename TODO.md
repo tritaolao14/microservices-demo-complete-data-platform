@@ -62,6 +62,12 @@ The project has a partial data platform implementation with foundational infrast
     - Project `src/data_processing/dbt`: `stg_orders_items` (silver) → `fact_orders_items` (gold), grain `(order_id, product_id)`
     - `dbt build` PASS=26 (2 models + 24 tests); reconcile `analytics.order_items` window 2026-10-11..2026-10-15 = 67.013 dòng
     - CronJob `dbt-build` trong `gitops/overlays/dev/dbt.yaml`, chạy sau Bronze sync
+  - [x] Add Great Expectations data quality layer (DPFMD-39)
+    - Project `src/data_processing/great_expectations`: datasource Trino (`iceberg.gold`) + Postgres (`analytics`), checkpoint `fact_orders_items_awap`
+    - 3 validation definitions: fact window integrity, reference totals, cross-catalog reconcile (window 2026-10-11..2026-10-15; 67.013 dòng, units 451.674, revenue 336.524.180,88)
+    - CronJob `great-expectations` (`gitops/overlays/dev/great-expectations.yaml`) lúc `15 * * * *`, chạy sau `dbt-build`
+    - Trino results materialized into a temp SQLite snapshot before GE validation; price check uses per-unit rounding tolerance
+    - Runtime verify PASS (2026-10-31, exit 0): checkpoint `fact_orders_items_awap` PASSED, 67.013 fact items, deltas = 0, price mismatch = 0; xem `docs/data-engineering-patterns.md` §20 → `Đang chạy`
 - [ ] Deploy BI Dashboard
   - [ ] Install Apache Superset or Metabase
   - [ ] Configure connections to data warehouse
