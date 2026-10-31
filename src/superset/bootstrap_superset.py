@@ -21,11 +21,17 @@ import os
 import textwrap
 
 from superset.app import create_app
-from superset.connectors.sqla.models import SqlaTable, SqlMetric, TableColumn
-from superset.extensions import db, security_manager
-from superset.models.core import Database
-from superset.models.dashboard import Dashboard
-from superset.models.slice import Slice
+
+# Model modules are imported lazily inside the Flask app context (see main()):
+# superset.models.helpers reads `app.config` at module level, so a top-level
+# import raises "Working outside of application context" in a standalone script.
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from superset.connectors.sqla.models import SqlaTable
+    from superset.models.core import Database
+    from superset.models.dashboard import Dashboard
+    from superset.models.slice import Slice
 
 DATABASE_NAME = "Trino Iceberg"
 DASHBOARD_SLUG = "business-overview"
@@ -147,7 +153,7 @@ DATASETS = [
 ]
 
 
-def _admin_user():
+def _admin_user(security_manager, db):
     admin = security_manager.find_user(username=ADMIN_USERNAME)
     if admin is not None:
         return admin
@@ -168,7 +174,7 @@ def _admin_user():
     return admin
 
 
-def _database():
+def _database(db, Database):
     database = (
         db.session.query(Database)
         .filter_by(database_name=DATABASE_NAME)
@@ -191,7 +197,8 @@ def _database():
     return database
 
 
-def _dataset(database, spec):
+def _dataset(db, models, database, spec):
+    SqlaTable, TableColumn, SqlMetric = models
     dataset = (
         db.session.query(SqlaTable)
         .filter_by(table_name=spec["name"], database_id=database.id)
@@ -251,7 +258,7 @@ def _raw_table_params(columns, order_by, row_limit):
     }
 
 
-def _chart(dataset, name, params, description, admin):
+def _chart(db, Slice, dataset, name, params, description, admin):
     chart = db.session.query(Slice).filter_by(slice_name=name).one_or_none()
     if chart is None:
         chart = Slice(slice_name=name)
@@ -313,7 +320,7 @@ def _layout(charts):
     return layout
 
 
-def _dashboard(charts, admin):
+def _dashboard(db, Dashboard, charts, admin):
     dashboard = (
         db.session.query(Dashboard).filter_by(slug=DASHBOARD_SLUG).one_or_none()
     )
@@ -347,12 +354,21 @@ def _dashboard(charts, admin):
 def main() -> int:
     app = create_app()
     with app.app_context():
-        admin = _admin_user()
-        database = _database()
-        datasets = [_dataset(database, spec) for spec in DATASETS]
+        from superset import db, security_manager
+        from superset.connectors.sqla.models import SqlMetric, SqlaTable, TableColumn
+        from superset.models.core import Database
+        from superset.models.dashboard import Dashboard
+        from superset.models.slice import Slice
+
+        admin = _admin_user(security_manager, db)
+        database = _database(db, Database)
+        dataset_models = (SqlaTable, TableColumn, SqlMetric)
+        datasets = [_dataset(db, dataset_models, database, spec) for spec in DATASETS]
 
         charts = [
             _chart(
+                db,
+                Slice,
                 datasets[0],
                 "Doanh thu theo giờ (Gold)",
                 _raw_table_params(
@@ -365,6 +381,8 @@ def main() -> int:
                 admin,
             ),
             _chart(
+                db,
+                Slice,
                 datasets[1],
                 "Sản phẩm bán chạy nhất",
                 _raw_table_params(
@@ -376,6 +394,8 @@ def main() -> int:
                 admin,
             ),
             _chart(
+                db,
+                Slice,
                 datasets[2],
                 "Sản phẩm bỏ giỏ chưa thanh toán (proxy)",
                 _raw_table_params(
@@ -395,7 +415,7 @@ def main() -> int:
             ),
         ]
 
-        dashboard = _dashboard(charts, admin)
+        dashboard = _dashboard(db, Dashboard, charts, admin)
         print(
             "Superset bootstrap complete: "
             f"dashboard={dashboard.slug} charts={len(charts)} "
