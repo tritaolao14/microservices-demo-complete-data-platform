@@ -1,0 +1,162 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Trino serving layer (DPFMD-37).
+#
+# Single-node coordinator for the local stack. The Iceberg catalog is the same
+# JDBC catalog the Spark jobs write to (Postgres database product_catalog), so
+# Trino reads Bronze tables without a Hive metastore or a REST catalog.
+# ``iceberg.jdbc-catalog.catalog-name`` must stay ``my_catalog``: that is the
+# value Spark wrote into iceberg_tables.catalog_name, and a different name
+# makes every Spark-created table invisible.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trino-config
+  labels:
+    app: trino
+data:
+  config.properties: |
+    coordinator=true
+    node-scheduler.include-coordinator=true
+    http-server.http.port=8080
+    discovery.uri=http://trino:8080
+    query.max-memory=1GB
+    query.max-memory-per-node=1GB
+  node.properties: |
+    node.environment=onlineboutique
+    node.data-dir=/data/trino
+  jvm.config: |
+    -server
+    -Xmx1536m
+    -XX:+UseG1GC
+    -XX:G1HeapRegionSize=32M
+    -XX:+ExplicitGCInvokesConcurrent
+    -XX:+HeapDumpOnOutOfMemoryError
+    -XX:+ExitOnOutOfMemoryError
+    -XX:ReservedCodeCacheSize=512M
+    -Djdk.attach.allowAttachSelf=true
+    -Djdk.nio.maxCachedBufferSize=2000000
+    -Dfile.encoding=UTF-8
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trino-catalog
+  labels:
+    app: trino
+data:
+  iceberg.properties: |
+    connector.name=iceberg
+    iceberg.catalog.type=jdbc
+    iceberg.jdbc-catalog.driver-class=org.postgresql.Driver
+    iceberg.jdbc-catalog.connection-url=jdbc:postgresql://postgres:5432/product_catalog
+    iceberg.jdbc-catalog.connection-user=boutique
+    iceberg.jdbc-catalog.connection-password=boutique_pass
+    iceberg.jdbc-catalog.catalog-name=my_catalog
+    iceberg.jdbc-catalog.default-warehouse-dir=s3a://iceberg-warehouse/
+    fs.native-s3.enabled=true
+    s3.endpoint=http://minio:9000
+    s3.region=us-east-1
+    s3.path-style-access=true
+    s3.aws-access-key=admin
+    s3.aws-secret-key=admin123
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trino
+  labels:
+    app: trino
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trino
+  template:
+    metadata:
+      labels:
+        app: trino
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+      - name: trino
+        image: trinodb/trino:476
+        ports:
+        - name: http
+          containerPort: 8080
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: "2"
+            memory: 2Gi
+        readinessProbe:
+          httpGet:
+            path: /v1/info
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 12
+        livenessProbe:
+          httpGet:
+            path: /v1/status
+            port: http
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: config
+          mountPath: /etc/trino
+          readOnly: true
+        - name: catalog
+          mountPath: /etc/trino/catalog
+          readOnly: true
+        - name: data
+          mountPath: /data/trino
+      volumes:
+      - name: config
+        configMap:
+          name: trino-config
+      - name: catalog
+        configMap:
+          name: trino-catalog
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trino
+  labels:
+    app: trino
+spec:
+  selector:
+    app: trino
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http

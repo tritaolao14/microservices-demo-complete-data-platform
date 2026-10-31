@@ -30,6 +30,7 @@ resources:
   - kafka.yaml
   - postgresql.yaml
   - minio.yaml
+  - trino.yaml
   - spark-bronze-orders.yaml
   - spark-iceberg-maintenance.yaml
   - local-cdn.yaml

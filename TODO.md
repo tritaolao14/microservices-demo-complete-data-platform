@@ -57,7 +57,7 @@ The project has a partial data platform implementation with foundational infrast
     - Bắt buộc mỗi connector một `topic.prefix` khác nhau, nếu không JMX MBean trùng
       làm task `RUNNING` nhưng slot không active và không có event
 - [ ] Setup Data Warehouse
-  - [ ] Configure Trino or ClickHouse for data querying
+  - [x] Configure Trino or ClickHouse for data querying (Trino 476 + Iceberg JDBC catalog, DPFMD-37)
   - [ ] Set up dbt for data transformation
 - [ ] Deploy BI Dashboard
   - [ ] Install Apache Superset or Metabase

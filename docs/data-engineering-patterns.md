@@ -4,7 +4,7 @@ Tài liệu này liệt kê **các data engineering pattern đã áp dụng th�
 
 > **Quy tắc bắt buộc:** mỗi PR thay đổi hành vi data platform **phải cập nhật tài liệu này** trong cùng PR. Xem `AGENTS.md` → "Data Platform Documentation Rule".
 
-Cập nhật lần cuối: 2026-10-31 (DPFMD-36; Bronze→Iceberg chuyển sang sync định kỳ có watermark `ingest_state`, thêm `bucket(16, order_id)`, retention raw 30d / bronze 90d và raw topic `orders` giữ 30d).
+Cập nhật lần cuối: 2026-10-31 (DPFMD-37; thêm Trino single-node với Iceberg JDBC catalog đọc trực tiếp `bronze.orders`; trước đó DPFMD-36 chuyển Bronze→Iceberg sang sync định kỳ có watermark `ingest_state`, thêm `bucket(16, order_id)`, retention raw 30d / bronze 90d).
 
 
 ## Chú giải trạng thái
@@ -38,7 +38,7 @@ Cập nhật lần cuối: 2026-10-31 (DPFMD-36; Bronze→Iceberg chuyển sang 
 | 14d | Iceberg Maintenance + Retention (7d snapshot / 90d bronze / 30d raw) | Đang chạy | `kubernetes-manifests/spark-iceberg-maintenance.py:113`, `kubernetes-manifests/spark-iceberg-maintenance.py:140` |
 | 15 | Orchestration (Airflow) | Chưa làm | roadmap Phase 3 |
 | 16 | Transformation (dbt / Star schema) | Chưa làm | roadmap Phase 3 |
-| 17 | Serving / Query Layer (Trino/ClickHouse) | Chưa làm | roadmap Phase 3 |
+| 17 | Serving / Query Layer (Trino + Iceberg JDBC catalog) | Đang chạy | `kubernetes-manifests/trino.yaml`, `kubernetes-manifests/kustomization.yaml:33` |
 | 18 | BI / Visualization | Chưa làm | roadmap Phase 4 |
 | 19 | Security & Governance (secrets, auth) | Chưa làm | `TODO.md` Sprint 3 |
 
@@ -227,9 +227,20 @@ Hai env `RAW_RETENTION_DAYS` / `BRONZE_RETENTION_DAYS` trong CronJob manifest ch
 
 - **Verify E2E (kind-ci-local)**: driver chạy exit 0; `SHOW TBLPROPERTIES` xác nhận đủ 4 property đã persist (`604800000`, `24`, `true`, `10`). Với dữ liệu 2026-10-09/10 và hôm nay 2026-10-31, cutoff 90d = 2026-08-02 và 30d = 2026-10-01 → cả hai no-op đúng như log (`nothing to drop`, `nothing to prune`), chứng minh nhánh tính cutoff + query chạy đúng; `orders` retention.ms xác nhận `2592000000` trên cluster. Compaction, `expire_snapshots` và `remove_orphan_files` (dry-run) đều exit 0.
 
-## 15–18. Chưa làm
+## 17. Serving / Query Layer — Trino + Iceberg JDBC catalog — Đang chạy
 
-- **Orchestration (Airflow)**, **Transformation (dbt + Star schema)**, **Query layer (Trino/ClickHouse)**, **BI (Superset/Metabase)** — thuộc Phase 3–4 trong `docs/data-platform.md`.
+Trino 476 single-node đọc trực tiếp bảng Iceberg do Spark ghi, không cần Hive Metastore hay REST catalog:
+
+- **Manifest**: `kubernetes-manifests/trino.yaml` — ConfigMap `trino-config` (`config.properties`, `node.properties`, `jvm.config`), ConfigMap `trino-catalog` (`iceberg.properties`), `Deployment/trino` và `Service/trino:8080`; khai báo trong base `kubernetes-manifests/kustomization.yaml:33` nên mọi overlay đều có.
+- **Catalog**: `iceberg.catalog.type=jdbc` trỏ vào Postgres `product_catalog` — đúng database Spark đang dùng. `iceberg.jdbc-catalog.catalog-name=my_catalog` **bắt buộc** khớp `iceberg_tables.catalog_name` do Spark ghi; đổi tên sẽ khiến mọi bảng Spark tạo trở nên vô hình. `default-warehouse-dir=s3a://iceberg-warehouse/` giữ nguyên scheme `s3a` mà Spark đã ghi trong metadata.
+- **MinIO**: `fs.native-s3.enabled=true` + `s3.endpoint=http://minio:9000`, path-style; Trino native S3 đọc được location `s3a://` của bảng nên không cần Hadoop S3A.
+- **JDBC catalog schema**: `iceberg_tables` do Iceberg 1.6.1 (Spark) tạo tương thích với schema-version mặc định V1 của Trino; không cần migrate.
+- **Verify E2E (kind-ci-local)**: pod `1/1 Running`, `SHOW SCHEMAS FROM iceberg` → `bronze`; `SHOW TABLES FROM iceberg.bronze` → `ingest_state`, `orders`; `SELECT count(*) FROM iceberg.bronze.orders` = **34.294** (đúng số dòng Iceberg tại thời điểm verify); `SELECT count(*) ... WHERE _event_date = DATE '2026-10-10'` = **4.728**, khớp kết quả Spark; `SHOW CREATE TABLE` trả về `partitioning = ARRAY['day(_event_date)','bucket(order_id, 16)']`, `location = 's3a://iceberg-warehouse/bronze/orders'`.
+- **Giới hạn hiện tại**: 1 coordinator, chưa HA; credentials nằm trong ConfigMap (cùng pattern với Postgres/Spark, xử lý ở Sprint 3); chưa cấu hình catalog Postgres để federate trực tiếp — AC so sánh count của DPFMD-28 sẽ làm bằng hai client (Trino vs psql).
+
+## 15, 16, 18. Chưa làm
+
+- **Orchestration (Airflow)**, **Transformation (dbt + Star schema)**, **BI (Superset/Metabase)** — thuộc Phase 3–4 trong `docs/data-platform.md`.
 - **Security & Governance** (SealedSecret, Schema Registry auth, mã hoá config topic) — Sprint 3 trong `TODO.md`.
 
 ---
