@@ -4,7 +4,7 @@ Tài liệu này liệt kê **các data engineering pattern đã áp dụng th�
 
 > **Quy tắc bắt buộc:** mỗi PR thay đổi hành vi data platform **phải cập nhật tài liệu này** trong cùng PR. Xem `AGENTS.md` → "Data Platform Documentation Rule".
 
-Cập nhật lần cuối: 2026-10-10 (DPFMD-51; Job dạng `PostSync` hook để hết dao động OutOfSync do TTL).
+Cập nhật lần cuối: 2026-10-31 (DPFMD-49; tạo topic nội bộ Kafka Connect chuyển từ Job rời sang initContainer của `Deployment/debezium-connect` để bảo đảm thứ tự trên cluster sạch).
 
 
 ## Chú giải trạng thái
@@ -27,7 +27,7 @@ Cập nhật lần cuối: 2026-10-10 (DPFMD-51; Job dạng `PostSync` hook đ�
 | 6 | Retry + Circuit Breaker (in-memory backoff) | Đang chạy | `infrastructure/kafka_retry_producer.py`, `postgres_writer.py:87` |
 | 7 | Change Data Capture (CDC) | Đang chạy | `gitops/overlays/dev/debezium.yaml`, `scripts/e2e-cdc.sh`, `docs/data-platform.md:39` |
 | 8 | Schema Registry / Data Contract (Avro) | Đang chạy | `gitops/overlays/dev/schema-registry.yaml`, `src/debezium/` |
-| 9 | Declarative Config Reconciliation (drift) | Đang chạy | `Job/debezium-init-topics`, `Job/debezium-register` trong `gitops/overlays/dev/debezium.yaml` |
+| 9 | Declarative Config Reconciliation (drift) | Đang chạy | `initContainer/init-topics` trong `Deployment/debezium-connect`, `Job/debezium-register` (`gitops/overlays/dev/debezium.yaml`) |
 | 10 | GitOps (ArgoCD + Kustomize overlays) | Đang chạy | `gitops/overlays/{dev,staging,production}` |
 | 11 | Full / Incremental Batch Load + Upsert | Đang chạy | `src/data_processing/seed_database.py` |
 | 12 | Dimensional Modeling (một phần) | Đang chạy | `analytics.order_items` trong `seed_database.py:67` |
@@ -101,9 +101,10 @@ Cập nhật lần cuối: 2026-10-10 (DPFMD-51; Job dạng `PostSync` hook đ�
 
 ## 9. Declarative Config Reconciliation — Đang chạy
 
-- `Job/debezium-init-topics` (DPFMD-49): tạo 3 topic nội bộ của Kafka Connect (`_debezium_connect_configs/_offsets/_statuses`) với `cleanup.policy=compact` và đúng số partition (1/25/5) **trước khi** worker start. Broker chạy `auto.create.topics.enable=true` (cần cho `dataingestion`), nên ai hỏi topic trước cũng tạo được — nhưng broker tạo với `cleanup.policy=delete` và 1 partition, còn Connect thì **từ chối start**:
+- `initContainer init-topics` (DPFMD-49): tạo 3 topic nội bộ của Kafka Connect (`_debezium_connect_configs/_offsets/_statuses`) với `cleanup.policy=compact` và đúng số partition (1/25/5) **trước khi** container worker start. Broker chạy `auto.create.topics.enable=true` (cần cho `dataingestion`), nên ai hỏi topic trước cũng tạo được — nhưng broker tạo với `cleanup.policy=delete` và 1 partition, còn Connect thì **từ chối start**:
   `ConfigException: Topic '_debezium_connect_offsets' ... is required to have 'cleanup.policy=compact'`.
-  Hậu quả khi thiếu: `/connectors/{name}/config` treo → `Job/debezium-register` timeout; CDC **dừng hẳn** (offset topic = 0 dù đã insert), generation Kafka group lên hơn 2,5 triệu (~14 rebalance/giây) trong khi pod vẫn `Running`. Job idempotent, chạy trên image `confluentinc/cp-kafka` (image debezium không có CLI `kafka-topics`), cảnh báo nếu topic tồn tại sai chuẩn.
+  Hậu quả khi thiếu: `/connectors/{name}/config` treo → `Job/debezium-register` timeout; CDC **dừng hẳn** (offset topic = 0 dù đã insert), generation Kafka group lên hơn 2,5 triệu (~14 rebalance/giây) trong khi pod vẫn `Running`. Init idempotent (tạo nếu thiếu, cảnh báo nếu topic tồn tại sai chuẩn), chạy trên image `confluentinc/cp-kafka` (image debezium không có CLI `kafka-topics`) và chờ broker bằng `kafka-broker-api-versions` tối đa 120s.
+  Đây là initContainer **trong cùng pod** `Deployment/debezium-connect` (chạy trước container worker theo thứ tự Kubernetes), thay cho `Job/debezium-init-topics` rời trước đây — Job rời không có thứ tự với worker vì ArgoCD apply song song, nên trên cluster sạch worker có thể kịp tự tạo topic sai trước.
 - `Job/debezium-register`: GET config thật → POST nếu chưa có → PUT nếu lệch git → chờ `RUNNING` → verify lại (`gitops/overlays/dev/debezium.yaml`).
 - **Retry lỗi transport** (DPFMD-50): `request()` thử lại 5 lần với backoff cho `URLError` / `TimeoutError` / `OSError` / `HTTPException`, rồi mới ném `Failed`. HTTP error (404…) **vẫn là giá trị trả về, không retry** vì 404 là nhánh bình thường. Trước đó một response chậm là `TimeoutError` thô bay ra ngoài, giết pod; pod restart, gặp lại response chậm, hết `backoffLimit` ⇒ **reconcile âm thầm dừng hẳn**. Giờ connector đó được báo chưa reconcile và connector còn lại vẫn xử lý.
 - Chỉ PUT khi thật sự drift (tránh restart task liên tục); Job fail khi drift ⇒ đóng vai trò monitoring.
@@ -112,9 +113,10 @@ Cập nhật lần cuối: 2026-10-10 (DPFMD-51; Job dạng `PostSync` hook đ�
 
 - ArgoCD `Application/dev` với `prune` + `selfHeal` + `CreateNamespace`; Kustomize overlays `dev` / `staging` / `production`.
 - CI build kustomize cho cả 3 overlay (`.github/workflows/pre-pr.yaml`).
-- **Job trong overlay không được TTL đứng độc lập.** `ttlSecondsAfterFinished` xoá Job sau khi xong, còn ArgoCD vẫn muốn resource đó tồn tại ⇒ app `OutOfSync` trong khoảng ~60s mỗi chu kỳ TTL rồi tự tạo lại. Với 3 Job cùng TTL 600s lệch pha, app `OutOfSync` ~27% thời gian — không bao giờ ổn định, dù `HEALTH=Healthy`.
+- **Job trong overlay không được TTL đứng độc lập.** `ttlSecondsAfterFinished` xoá Job sau khi xong, còn ArgoCD vẫn muốn resource đó tồn tại ⇒ app `OutOfSync` trong khoảng ~60s mỗi chu kỳ TTL rồi tự tạo lại. Với 3 Job TTL 600s lệch pha trước đây, app `OutOfSync` ~27% thời gian — không bao giờ ổn định, dù `HEALTH=Healthy`.
   - `Job/debezium-register` và `Job/kafka-create-topic` dùng `argocd.argoproj.io/hook: PostSync` ⇒ ArgoCD không diff chúng, không còn vòng lặp TTL. Cả hai đều có vòng chờ riêng (`wait_for_api` trên REST API Connect; `kafka-broker-api-versions` trên broker) nên an toàn khi chạy PostSync.
-  - `Job/debezium-init-topics` **cố ý không dùng hook**: phải tạo topic nội bộ *trước khi* worker Kafka Connect khởi động (PostSync chạy sau ⇒ worker đã tự tạo topic sai với `cleanup.policy=delete`). Cần initContainer trong `Deployment/debezium-connect`, chưa làm.
+  - `initContainer init-topics` **không dùng hook**: phải tạo topic nội bộ *trước khi* worker Kafka Connect khởi động (PostSync chạy sau ⇒ worker đã tự tạo topic sai với `cleanup.policy=delete`). Đã chuyển từ Job rời sang initContainer trong cùng pod `Deployment/debezium-connect`, nên thứ tự tuyệt đối được bảo đảm; file `gitops/overlays/dev/debezium-init-topics.yaml` đã xoá.
+  - `Job/spark-bronze-orders` (base, TTL 3600s) vẫn là Job TTL độc lập, chưa gắn hook ⇒ vẫn có thể gây `OutOfSync` ngắn mỗi giờ; xử lý sau.
   - `ttlSecondsAfterFinished` còn lại chỉ là backstop khi `kubectl apply` tay ngoài ArgoCD; hook thành công bị ArgoCD tự xoá.
 
 ## 11. Full / Incremental Batch Load + Upsert — Đang chạy
