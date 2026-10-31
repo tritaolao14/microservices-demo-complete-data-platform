@@ -4,7 +4,7 @@ Tài liệu này liệt kê **các data engineering pattern đã áp dụng th�
 
 > **Quy tắc bắt buộc:** mỗi PR thay đổi hành vi data platform **phải cập nhật tài liệu này** trong cùng PR. Xem `AGENTS.md` → "Data Platform Documentation Rule".
 
-Cập nhật lần cuối: 2026-10-31 (DPFMD-37; thêm Trino single-node với Iceberg JDBC catalog đọc trực tiếp `bronze.orders`; trước đó DPFMD-36 chuyển Bronze→Iceberg sang sync định kỳ có watermark `ingest_state`, thêm `bucket(16, order_id)`, retention raw 30d / bronze 90d).
+Cập nhật lần cuối: 2026-10-31 (DPFMD-37 + sửa AC DPFMD-28: Trino single-node với Iceberg JDBC catalog; chốt reconciliation contract Bronze ↔ `analytics.order_items` theo grain order-item và complete window thay cho baseline 760; trước đó DPFMD-36 chuyển Bronze→Iceberg sang sync định kỳ có watermark `ingest_state`, thêm `bucket(16, order_id)`, retention raw 30d / bronze 90d).
 
 
 ## Chú giải trạng thái
@@ -226,6 +226,29 @@ Ticket DPFMD-36 viết bằng **ngôn ngữ Delta Lake**, nhưng DPFMD-35 tạo 
 Hai env `RAW_RETENTION_DAYS` / `BRONZE_RETENTION_DAYS` trong CronJob manifest cho phép chỉnh window; `RAW_PRUNE_DRY_RUN=true` để chỉ báo candidate mà không xoá.
 
 - **Verify E2E (kind-ci-local)**: driver chạy exit 0; `SHOW TBLPROPERTIES` xác nhận đủ 4 property đã persist (`604800000`, `24`, `true`, `10`). Với dữ liệu 2026-10-09/10 và hôm nay 2026-10-31, cutoff 90d = 2026-08-02 và 30d = 2026-10-01 → cả hai no-op đúng như log (`nothing to drop`, `nothing to prune`), chứng minh nhánh tính cutoff + query chạy đúng; `orders` retention.ms xác nhận `2592000000` trên cluster. Compaction, `expire_snapshots` và `remove_orphan_files` (dry-run) đều exit 0.
+
+## 14e. Reconciliation contract — Bronze ↔ `analytics.order_items` (chuẩn cho dbt) — Đang áp dụng
+
+AC ban đầu của DPFMD-28 ("Trino `count(*) iceberg.bronze.orders` == Postgres `analytics.order_items`, 760 rows baseline") có hai lỗi; từ 2026-10-31 dùng contract dưới đây.
+
+- **Lỗi grain**: `bronze.orders` là 1 dòng / order event (1 Kafka message, `items` lồng trong `raw`), còn `analytics.order_items` là 1 dòng / `(order_id, product_id)`. Hai count không cùng đơn vị. Phải explode `raw.items` rồi dedupe `(order_id, product_id)` — đúng PK và `ON CONFLICT DO NOTHING` của `PostgresWriter` (`src/dataingestion/infrastructure/postgres_writer.py:19`).
+- **Lỗi baseline/window**: `760` chỉ là số item của ngày seed đầu tiên `2026-08-27`, không phải tổng. Postgres có dữ liệu từ 27/08; Kafka `orders` giữ 30d nên Bronze chỉ bắt đầu từ 09/10 và còn backlog sau 16/10 ⇒ so tổng luôn lệch. Chỉ so trong **complete window** mà cả hai phía đã đủ.
+- **AC mới**: window `2026-10-11` → `2026-10-15`; `fact_orders_items` (grain order item) = **67.013** dòng, bằng `count(*) analytics.order_items` cùng window (diff = 0). Breakdown: 16.544 / 14.915 / 15.325 / 13.209 / 7.020. Khi Bronze drain hết backlog thì mở rộng window; `760` chỉ còn là smoke test ngày đầu.
+- **Bằng chứng**: raw Bronze trong window = 27.137 order events (không phải 67.013) — minh hoạ lỗi grain; explode + dedupe `(order_id, product_id)` = 67.013, khớp Postgres từng ngày.
+- **Cấu trúc raw**: `items[].item.product_id`, `items[].item.quantity`, `items[].cost.{currency_code,units,nanos}`; `unit_price = units + nanos/1e9`, `total_price = quantity * unit_price`, `event_timestamp = raw.timestamp`; payload không có `status` nên dùng `SUCCEED` như `deserializer.py:30`.
+- **Vai trò**: dbt build từ Iceberg (nguồn sự thật của event history); Postgres `analytics.order_items` chỉ là reference để reconcile, không phải dependency runtime.
+- **Reconcile SQL** (Trino):
+  ```sql
+  SELECT count(*) FROM (
+    SELECT order_id,
+           json_extract_scalar(t.item, '$.item.product_id') AS product_id
+    FROM iceberg.bronze.orders
+    CROSS JOIN UNNEST(CAST(json_extract(raw, '$.items') AS array(json))) AS t(item)
+    WHERE _event_date BETWEEN DATE '2026-10-11' AND DATE '2026-10-15'
+    GROUP BY 1, 2
+  );
+  ```
+  Kỳ vọng `67013`; đối chiếu `SELECT count(*) FROM analytics.order_items WHERE event_timestamp::date BETWEEN '2026-10-11' AND '2026-10-15';`.
 
 ## 17. Serving / Query Layer — Trino + Iceberg JDBC catalog — Đang chạy
 
