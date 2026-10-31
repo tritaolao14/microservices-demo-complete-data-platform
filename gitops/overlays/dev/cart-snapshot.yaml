@@ -1,0 +1,67 @@
+# Cart snapshot exporter (DPFMD-40).
+#
+# cartservice keeps carts in Redis and emits no Kafka events, so the data
+# platform has no add-to-cart history. This job samples the current carts every
+# five minutes into analytics.cart_snapshots. The Superset dataset
+# bi_cart_abandonment compares open cart units with paid units from the Gold
+# fact as a documented proxy for cart abandonment.
+#
+# Dev-only, like dbt-build and great-expectations: the BI layer is not consumed
+# by staging/production yet, and the exporter reads the dev cartservice.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cart-snapshot
+  labels:
+    app: cart-snapshot
+spec:
+  schedule: "*/5 * * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 600
+      template:
+        metadata:
+          labels:
+            app: cart-snapshot
+        spec:
+          restartPolicy: Never
+          imagePullSecrets:
+          - name: ghcr-secret
+          containers:
+          - name: cart-snapshot
+            image: data_processing
+            imagePullPolicy: IfNotPresent
+            command:
+            - /opt/cart/bin/python
+            - /opt/cart/project/cart_snapshot.py
+            env:
+            - name: REDIS_HOST
+              value: "redis-cart"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: PG_HOST
+              value: "postgres"
+            - name: PG_PORT
+              value: "5432"
+            - name: PG_DATABASE
+              value: "product_catalog"
+            - name: PG_USER
+              value: "boutique"
+            - name: PG_PASSWORD
+              value: "boutique_pass"
+            - name: SNAPSHOT_RETENTION_DAYS
+              value: "7"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                memory: 256Mi

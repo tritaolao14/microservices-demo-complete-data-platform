@@ -4,7 +4,7 @@ Tài liệu này liệt kê **các data engineering pattern đã áp dụng th�
 
 > **Quy tắc bắt buộc:** mỗi PR thay đổi hành vi data platform **phải cập nhật tài liệu này** trong cùng PR. Xem `AGENTS.md` → "Data Platform Documentation Rule".
 
-Cập nhật lần cuối: 2026-10-31 (DPFMD-39: thêm layer Great Expectations với checkpoint `fact_orders_items_awap` đối chiếu Trino `iceberg.gold.fact_orders_items` ↔ Postgres `analytics.order_items`; kết quả query Trino được materialize vào SQLite tạm vì GX 1.3 + dialect Trino không trả column metadata cho batch, và invariant chênh giá dùng tolerance nửa cent/đơn vị cho khớp rounding của pipeline; **verify runtime PASS (exit 0)** — checkpoint `fact_orders_items_awap` PASSED, cả 3 validation definition success, `fact_items = 67.013`, `fact_units = 451.674`, `fact_revenue_cents = 33.652.418.088`, các delta = 0, `fact_price_mismatch_rows = 0` ⇒ chuyển trạng thái sang `Đang chạy`; trước đó DPFMD-38: dbt project `src/data_processing/dbt` build staging → marts, `dbt build` PASS=26; `fact_orders_items` grain order-item reconcile với `analytics.order_items` window 2026-10-11..2026-10-15 = 67.013 dòng, diff=0; Trino thêm catalog `postgres` cho reconcile; DPFMD-37 deploy Trino + Iceberg JDBC catalog, DPFMD-28 chốt reconciliation contract theo grain order-item thay cho baseline 760).
+Cập nhật lần cuối: 2026-10-31 (DPFMD-40: thêm layer BI — image `src/superset` (Superset 4.1.2 + dialect Trino), metadata Postgres riêng, datasource `trino://superset@trino:8080/iceberg`, dashboard `business-overview` với 3 chart từ `iceberg.gold.fact_orders_items`; cart abandonment dùng Redis snapshot (`cart-snapshot` CronJob) vì cartservice không phát event — xem §18; trước đó DPFMD-39: thêm layer Great Expectations với checkpoint `fact_orders_items_awap` đối chiếu Trino `iceberg.gold.fact_orders_items` ↔ Postgres `analytics.order_items`; kết quả query Trino được materialize vào SQLite tạm vì GX 1.3 + dialect Trino không trả column metadata cho batch, và invariant chênh giá dùng tolerance nửa cent/đơn vị cho khớp rounding của pipeline; **verify runtime PASS (exit 0)** — checkpoint `fact_orders_items_awap` PASSED, cả 3 validation definition success, `fact_items = 67.013`, `fact_units = 451.674`, `fact_revenue_cents = 33.652.418.088`, các delta = 0, `fact_price_mismatch_rows = 0` ⇒ chuyển trạng thái sang `Đang chạy`; trước đó DPFMD-38: dbt project `src/data_processing/dbt` build staging → marts, `dbt build` PASS=26; `fact_orders_items` grain order-item reconcile với `analytics.order_items` window 2026-10-11..2026-10-15 = 67.013 dòng, diff=0; Trino thêm catalog `postgres` cho reconcile; DPFMD-37 deploy Trino + Iceberg JDBC catalog, DPFMD-28 chốt reconciliation contract theo grain order-item thay cho baseline 760).
 
 
 ## Chú giải trạng thái
@@ -39,7 +39,7 @@ Cập nhật lần cuối: 2026-10-31 (DPFMD-39: thêm layer Great Expectations 
 | 15 | Orchestration (Airflow) | Chưa làm | roadmap Phase 3 |
 | 16 | Transformation (dbt / Star schema — staging + fact) | Đang chạy | `src/data_processing/dbt/`, `models/staging/stg_orders_items.sql`, `models/marts/fact_orders_items.sql`, `tests/assert_fact_matches_postgres.sql` |
 | 17 | Serving / Query Layer (Trino + Iceberg JDBC catalog) | Đang chạy | `kubernetes-manifests/trino.yaml`, `kubernetes-manifests/kustomization.yaml:33` |
-| 18 | BI / Visualization | Chưa làm | roadmap Phase 4 |
+| 18 | BI / Visualization (Superset + Trino dashboards) | Đang chạy | `src/superset/`, `gitops/overlays/dev/superset.yaml`, `src/data_processing/cart_snapshot.py` |
 | 19 | Security & Governance (secrets, auth) | Chưa làm | `TODO.md` Sprint 3 |
 | 20 | Data Quality / Reconciliation (Great Expectations checkpoint) | Đang chạy | `src/data_processing/great_expectations/run_checkpoint.py`, `gitops/overlays/dev/great-expectations.yaml` |
 
@@ -276,6 +276,40 @@ Trino 476 single-node đọc trực tiếp bảng Iceberg do Spark ghi, không c
 - **Catalog `postgres`**: `postgres.properties` trỏ thẳng vào `product_catalog` (cùng instance, user `boutique`) để dbt và truy vấn tay đọc được `postgres.analytics.order_items`; đây là reference cho reconcile ở mục 14e, không phải dependency runtime của pipeline.
 - **Giới hạn hiện tại**: 1 coordinator, chưa HA; credentials nằm trong ConfigMap (cùng pattern với Postgres/Spark, xử lý ở Sprint 3).
 
+## 18. BI / Visualization — Superset + Trino dashboards — Đang chạy
+
+Phase 4 của `docs/data-platform.md` được triển khai bằng Apache Superset 4.1.2 đọc trực tiếp Gold layer qua Trino; không có bản sao dữ liệu sang BI store.
+
+- **Image**: `src/superset/Dockerfile:8` — base `apache/superset:4.1.2`, cài `trino==0.330.0` bằng `--no-deps` để không đổi SQLAlchemy mà Superset pin; `src/superset/superset_config.py` đọc `SUPERSET_SECRET_KEY`/`SUPERSET_METADATA_URI` và tắt Talisman/secure cookie vì dev chạy HTTP.
+- **Metadata DB**: `Deployment/superset-metadata` + `PVC/superset-metadata-pvc` trong `gitops/overlays/dev/superset.yaml:41`, database `superset` tách khỏi `product_catalog`; home PVC mount tại `/app/superset_home`.
+- **Khởi tạo idempotent**: initContainer `superset-init` (`superset.yaml:153`) chạy `superset db upgrade` → `superset init` → `python /app/bootstrap_superset.py`; mọi object được tìm theo tên và cập nhật tại chỗ nên pod restart không nhân bản dashboard.
+- **Datasource**: `Database("Trino Iceberg")` với URI `trino://superset@trino:8080/iceberg` (`bootstrap_superset.py:171`), thấy catalog `iceberg` (Gold) và `postgres` (cart snapshots); SQL Lab bị giới hạn `allow_dml/ctas/cvas = False` (`bootstrap_superset.py:189`).
+- **Datasets** (SQL Lab views, không materialize thêm):
+  - `bi_revenue_by_hour` — `date_trunc('hour', event_timestamp)`, doanh thu/units/orders từ `iceberg.gold.fact_orders_items` (`bootstrap_superset.py:39`).
+  - `bi_top_products` — top sản phẩm theo `SUM(quantity)` và doanh thu (`bootstrap_superset.py:53`).
+  - `bi_cart_abandonment` — full outer join giữa cart snapshot mới nhất và paid units từ Gold (`bootstrap_superset.py:67`).
+- **Dashboard** `business-overview` (`bootstrap_superset.py:314`) gồm 3 chart dạng table: "Doanh thu theo giờ (Gold)", "Sản phẩm bán chạy nhất", "Sản phẩm bỏ giỏ chưa thanh toán (proxy)". Chart table được chọn vì bootstrap bằng ORM ổn định hơn params của từng viz type; đổi sang line/bar được trong UI mà không sửa dữ liệu.
+- **Cart data**: cartservice lưu cart trong Redis dạng protobuf `Hipstershop.Cart` (`protos/demo.proto:47`) và không publish event, nên pipeline không có add-to-cart history. `CronJob/cart-snapshot` (`gitops/overlays/dev/cart-snapshot.yaml:12`, `*/5 * * * *`) đọc Redis, decode protobuf tối giản (`cart_snapshot.py:114`), ghi `analytics.cart_snapshots` (`cart_snapshot.py:33`) và giữ 7 ngày. Đây là **proxy**: `cart_not_paid_rate = open cart units / (open cart units + paid units)` tại snapshot mới nhất, không phải tỷ lệ session-level; muốn có tỷ lệ thật phải instrument cart event (follow-up, ngoài scope DPFMD-40).
+- **Freshness**: dbt chạy `:50` hàng giờ nên Gold trễ tối đa ~1 giờ; dashboard hiển thị toàn bộ Gold hiện có (dữ liệu demo 2026-10-10..15) thay vì lọc "24h gần nhất", vì dữ liệu demo không phải wall-clock real-time.
+- **Truy cập**: `Service/superset` LoadBalancer port 8088 (`superset.yaml:263`) hoặc `kubectl port-forward`; tài khoản `admin`, password lấy từ Secret dev.
+- **Pattern**: BI là lớp serving/observability; không có pattern tương ứng trực tiếp trong index Konieczny. Gần nhất là **Offline Observer** (Ch.10) — dashboard chỉ đọc Gold đã publish; chất lượng đầu vào do AWAP/Reconciliator §20 chặn trước.
+- **Giới hạn**: dev-only; 1 replica; Secret plaintext (TODO Sprint 3); chưa có Celery/Redis cache cho Superset; cart metric là proxy.
+- **Verify runtime** (operator, 2026-10-31):
+  ```bash
+  # build/push image bootstrap trước lần dev-ci đầu tiên
+  docker build -t ghcr.io/tritaolao14/superset:dpfmd-40 src/superset
+  docker push ghcr.io/tritaolao14/superset:dpfmd-40
+  kubectl --context kind-ci-local apply -k gitops/overlays/dev
+  kubectl --context kind-ci-local -n onlineboutique-dev rollout status deploy/superset-metadata
+  kubectl --context kind-ci-local -n onlineboutique-dev rollout status deploy/superset
+  # tạo snapshot cart ngay, không đợi lịch */5
+  kubectl --context kind-ci-local -n onlineboutique-dev create job \
+    --from=cronjob/cart-snapshot cart-snapshot-manual
+  kubectl --context kind-ci-local -n onlineboutique-dev port-forward svc/superset 8088:8088
+  # mở http://localhost:8088, login admin, dashboard "Báo cáo kinh doanh — Online Boutique"
+  ```
+  Kỳ vọng: cả 3 chart load; `bi_revenue_by_hour` trả ~120 giờ dữ liệu Gold; `bi_top_products` top 20 product; `bi_cart_abandonment` có `cart_units > 0` sau snapshot đầu tiên. Ghi kết quả verify vào PR trước khi merge.
+
 ## 20. Data Quality / Reconciliation — Great Expectations — Đang chạy
 
 dbt data tests (§16) chặn dữ liệu sai ngay trong `dbt build`; Great Expectations (GE) bổ sung một checkpoint độc lập, có suite/validation definition tường minh và exit code riêng để CronJob lưu lịch sử fail. Cả hai dùng chung reconciliation contract ở §14e.
@@ -310,9 +344,9 @@ dbt data tests (§16) chặn dữ liệu sai ngay trong `dbt build`; Great Expec
   ```
   Kết quả: checkpoint `fact_orders_items_awap` **PASSED**, cả 3 validation definition success — `fact_orders_items_window` (Trino snapshot) pass toàn bộ not_null/unique/range/status; `postgres_order_items_window` pass reference totals; `fact_vs_postgres_window` pass với `fact_items = 67.013`, `fact_units = 451.674`, `fact_revenue_cents = 33.652.418.088`, `items_delta = units_delta = revenue_cents_delta = 0`, `fact_price_mismatch_rows = 0`.
 
-## 15, 18. Chưa làm
+## 15. Chưa làm
 
-- **Orchestration (Airflow)**, **BI (Superset/Metabase)** — thuộc Phase 3–4 trong `docs/data-platform.md`.
+- **Orchestration (Airflow)** — thuộc Phase 3 trong `docs/data-platform.md`. BI đã chuyển sang §18.
 - **Transformation**: đã có staging + fact ở mục 16; full star schema (dimension, bridge) vẫn còn thiếu.
 - **Security & Governance** (SealedSecret, Schema Registry auth, mã hoá config topic) — Sprint 3 trong `TODO.md`.
 

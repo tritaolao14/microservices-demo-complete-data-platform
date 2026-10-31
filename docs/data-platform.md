@@ -260,6 +260,12 @@ scripts/e2e-cdc.sh --cluster <ctx> --namespace <ns>   # hoặc env CLUSTER/NAMES
     -   *Các sản phẩm bán chạy nhất*
     -   *Sản phẩm có tỷ lệ đưa vào giỏ hàng nhưng không thanh toán cao nhất.*
 
+> **Trạng thái (DPFMD-40):** đã triển khai Apache Superset 4.1.2 trên dev overlay,
+> datasource Trino trỏ `iceberg.gold.fact_orders_items`, dashboard
+> `business-overview` với 3 báo cáo trên. Cart-but-no-pay dùng snapshot Redis
+> (`CronJob/cart-snapshot`) làm proxy vì cartservice chưa phát event; chi tiết
+> và runbook xem `docs/data-engineering-patterns.md` §18.
+
 ---
 
 ## 3. Tech Stack Gợi ý (Cho môi trường Local/Minikube)
@@ -267,4 +273,4 @@ scripts/e2e-cdc.sh --cluster <ctx> --namespace <ns>   # hoặc env CLUSTER/NAMES
 - **Ingestion/Orchestration:** Python, Apache Airflow
 - **Data Transformation:** dbt (Data Build Tool)
 - **Data Storage:** PostgreSQL (Warehouse nhỏ) / MinIO (Data Lake)
-- **BI / Analytics:** Metabase
+- **BI / Analytics:** Apache Superset + Trino
