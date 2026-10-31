@@ -30,6 +30,7 @@ resources:
 - schema-registry.yaml
 - lakehouse-bronze-writer.yaml
 - dbt.yaml
+- great-expectations.yaml
 images:
 - name: adservice
   newName: ghcr.io/tritaolao14/adservice

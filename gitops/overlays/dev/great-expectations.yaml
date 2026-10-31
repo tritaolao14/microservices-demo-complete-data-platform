@@ -1,0 +1,79 @@
+# Great Expectations data-quality checkpoint (DPFMD-39).
+#
+# Runs after the dbt build at :50 so the Gold fact it reconciles is the one this
+# hour's pipeline produced. The checkpoint validates the gold fact, the Postgres
+# reference, and the cross-catalog reconcile window; run_checkpoint.py exits
+# non-zero on any failed expectation, which makes the CronJob failed history the
+# alerting signal (same pattern as dbt-build).
+#
+# Dev-only for the same reason as dbt-build: the Gold layer is not consumed by
+# staging/production yet. The GE project and its virtualenv are baked into the
+# data_processing image (src/data_processing/great_expectations).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: great-expectations
+  labels:
+    app: great-expectations
+spec:
+  schedule: "15 * * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 900
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: great-expectations
+        spec:
+          restartPolicy: Never
+          imagePullSecrets:
+          - name: ghcr-secret
+          containers:
+          - name: great-expectations
+            image: data_processing
+            imagePullPolicy: IfNotPresent
+            command:
+            - /opt/ge/bin/python
+            - /opt/ge/project/run_checkpoint.py
+            env:
+            - name: TRINO_HOST
+              value: "trino"
+            - name: TRINO_PORT
+              value: "8080"
+            - name: TRINO_USER
+              value: "dbt"
+            - name: TRINO_CATALOG
+              value: "iceberg"
+            - name: TRINO_SCHEMA
+              value: "gold"
+            - name: TRINO_POSTGRES_CATALOG
+              value: "postgres"
+            - name: PG_HOST
+              value: "postgres"
+            - name: PG_PORT
+              value: "5432"
+            - name: PG_DATABASE
+              value: "product_catalog"
+            - name: PG_USER
+              value: "boutique"
+            - name: PG_PASSWORD
+              value: "boutique_pass"
+            # Closed window where both Bronze and Postgres are complete; the
+            # same contract as dbt's assert_fact_matches_postgres test.
+            - name: GE_WINDOW_START
+              value: "2026-10-11"
+            - name: GE_WINDOW_END
+              value: "2026-10-15"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            resources:
+              requests:
+                cpu: 200m
+                memory: 512Mi
+              limits:
+                memory: 1Gi

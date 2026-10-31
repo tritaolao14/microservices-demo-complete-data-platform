@@ -4,7 +4,7 @@ Tài liệu này liệt kê **các data engineering pattern đã áp dụng th�
 
 > **Quy tắc bắt buộc:** mỗi PR thay đổi hành vi data platform **phải cập nhật tài liệu này** trong cùng PR. Xem `AGENTS.md` → "Data Platform Documentation Rule".
 
-Cập nhật lần cuối: 2026-10-31 (DPFMD-38: dbt project `src/data_processing/dbt` build staging → marts, `dbt build` PASS=26; `fact_orders_items` grain order-item reconcile với `analytics.order_items` window 2026-10-11..2026-10-15 = 67.013 dòng, diff=0; Trino thêm catalog `postgres` cho reconcile; trước đó DPFMD-37 deploy Trino + Iceberg JDBC catalog, DPFMD-28 chốt reconciliation contract theo grain order-item thay cho baseline 760).
+Cập nhật lần cuối: 2026-10-31 (DPFMD-39: thêm layer Great Expectations với checkpoint `fact_orders_items_awap` đối chiếu Trino `iceberg.gold.fact_orders_items` ↔ Postgres `analytics.order_items`; kết quả query Trino được materialize vào SQLite tạm vì GX 1.3 + dialect Trino không trả column metadata cho batch, và invariant chênh giá dùng tolerance nửa cent/đơn vị cho khớp rounding của pipeline; **verify runtime PASS (exit 0)** — checkpoint `fact_orders_items_awap` PASSED, cả 3 validation definition success, `fact_items = 67.013`, `fact_units = 451.674`, `fact_revenue_cents = 33.652.418.088`, các delta = 0, `fact_price_mismatch_rows = 0` ⇒ chuyển trạng thái sang `Đang chạy`; trước đó DPFMD-38: dbt project `src/data_processing/dbt` build staging → marts, `dbt build` PASS=26; `fact_orders_items` grain order-item reconcile với `analytics.order_items` window 2026-10-11..2026-10-15 = 67.013 dòng, diff=0; Trino thêm catalog `postgres` cho reconcile; DPFMD-37 deploy Trino + Iceberg JDBC catalog, DPFMD-28 chốt reconciliation contract theo grain order-item thay cho baseline 760).
 
 
 ## Chú giải trạng thái
@@ -41,6 +41,7 @@ Cập nhật lần cuối: 2026-10-31 (DPFMD-38: dbt project `src/data_processin
 | 17 | Serving / Query Layer (Trino + Iceberg JDBC catalog) | Đang chạy | `kubernetes-manifests/trino.yaml`, `kubernetes-manifests/kustomization.yaml:33` |
 | 18 | BI / Visualization | Chưa làm | roadmap Phase 4 |
 | 19 | Security & Governance (secrets, auth) | Chưa làm | `TODO.md` Sprint 3 |
+| 20 | Data Quality / Reconciliation (Great Expectations checkpoint) | Đang chạy | `src/data_processing/great_expectations/run_checkpoint.py`, `gitops/overlays/dev/great-expectations.yaml` |
 
 ---
 
@@ -275,6 +276,40 @@ Trino 476 single-node đọc trực tiếp bảng Iceberg do Spark ghi, không c
 - **Catalog `postgres`**: `postgres.properties` trỏ thẳng vào `product_catalog` (cùng instance, user `boutique`) để dbt và truy vấn tay đọc được `postgres.analytics.order_items`; đây là reference cho reconcile ở mục 14e, không phải dependency runtime của pipeline.
 - **Giới hạn hiện tại**: 1 coordinator, chưa HA; credentials nằm trong ConfigMap (cùng pattern với Postgres/Spark, xử lý ở Sprint 3).
 
+## 20. Data Quality / Reconciliation — Great Expectations — Đang chạy
+
+dbt data tests (§16) chặn dữ liệu sai ngay trong `dbt build`; Great Expectations (GE) bổ sung một checkpoint độc lập, có suite/validation definition tường minh và exit code riêng để CronJob lưu lịch sử fail. Cả hai dùng chung reconciliation contract ở §14e.
+
+- **Project**: `src/data_processing/great_expectations/`
+  - `gx.yaml` — file context tối thiểu (`config_version: 1`); mỗi lần chạy copy vào temp root nên không ghi artifact vào working tree.
+  - `run_checkpoint.py` — dựng datasource, expectation suite, validation definition và checkpoint bằng GX Core 1.x (`_build_context`, `main`).
+  - `requirements.txt` — pin `great_expectations==1.3.0`, `pandas==2.1.4`, `trino[sqlalchemy]==0.330.0`, `psycopg2-binary==2.9.10`.
+- **Hai kết nối + snapshot**:
+  - Trino `trino://dbt@trino:8080/iceberg/gold` đọc `iceberg.gold.fact_orders_items`, đồng thời query cross-catalog tới `postgres.analytics.order_items` (`run_checkpoint.py:55`, `run_checkpoint.py:98`).
+  - Postgres `postgresql+psycopg2://boutique@postgres:5432/product_catalog` đọc trực tiếp `analytics.order_items` (`run_checkpoint.py:68`, `run_checkpoint.py:87`).
+  - GE 1.3 + dialect Trino không trả column metadata cho batch (`The column "order_id" in BatchData does not exist`), nên `_materialize` chạy query bằng SQLAlchemy Trino rồi ghi kết quả vào SQLite tạm; GE validate từ snapshot đó (`run_checkpoint.py:220`). Dữ liệu vẫn là kết quả query live trên Iceberg/Postgres.
+- **Checkpoint `fact_orders_items_awap`** gồm 3 validation definition:
+  1. `fact_orders_items_window` (Trino snapshot): 7 cột `not_null`, `(order_id, product_id)` unique, `quantity >= 1`, `unit_price`/`total_price >= 0`, `status = SUCCEED` (`run_checkpoint.py:145`).
+  2. `postgres_order_items_window` (Postgres): `reference_items = 67.013`, `reference_units = 451.674`, `reference_revenue_cents = 33.652.418.088` (= 336.524.180,88) (`run_checkpoint.py:180`).
+  3. `fact_vs_postgres_window` (Trino snapshot, đọc cả catalog `postgres`): fact totals đúng contract; `items_delta = units_delta = revenue_cents_delta = 0`; `fact_price_mismatch_rows = 0` (chênh vượt tolerance `quantity * 0.005 + 0.01`) (`run_checkpoint.py:188`).
+- **Tolerance chênh giá**: `unit_price` lưu 2 chữ số thập phân trong khi `total_price = cast(quantity * unit_price as decimal(12,2))` tính từ giá staging chưa làm tròn, nên mỗi dòng có thể lệch tới nửa cent × quantity. Query reconcile dùng `quantity * 0.005 + 0.01` thay cho ngưỡng phẳng `0,01` để không báo nhầm rounding hợp lệ (`run_checkpoint.py:118`).
+- **So sánh doanh thu bằng cent (`bigint`)**: cả hai phía tính `sum(total_price * 100)` trước khi so, tránh sai số float khi expectation so sánh số thập phân.
+- **Chạy**: `CronJob/great-expectations` (`gitops/overlays/dev/great-expectations.yaml:19`) chạy `15 * * * *` UTC, sau `dbt-build` lúc `:50`, command `/opt/ge/bin/python /opt/ge/project/run_checkpoint.py`. Image `data_processing` cài GE trong venv riêng `/opt/ge` (`src/data_processing/Dockerfile:45`), không đụng pin của writer/dbt.
+- **Fail = alert**: `run_checkpoint.py` in bảng `CheckpointResult.describe()` rồi `exit 1` nếu bất kỳ expectation fail (`run_checkpoint.py:317`); `failedJobsHistoryLimit: 3` giữ 3 Job fail gần nhất để điều tra.
+- **Pattern**: Reconciliator (post-load reconcile) + Gatekeeper ở mức Job (fail ⇒ Job failed), thuộc Ch.9. Chưa phải AWAP publish gate đầy đủ vì Gold đã materialize trước khi audit và không có bước quarantine/publish swap.
+- **Cấu hình**: env `TRINO_*`, `PG_*`, `GE_WINDOW_START/END` nằm trong CronJob; window mặc định `2026-10-11..2026-10-15`, trùng contract §14e.
+- **Verify runtime (2026-10-31) — PASS, exit 0**:
+  ```bash
+  kubectl --context kind-ci-local -n onlineboutique-dev port-forward svc/trino 8080:8080
+  kubectl --context kind-ci-local -n onlineboutique-dev port-forward svc/postgres 5432:5432
+
+  python3 -m venv /tmp/gevenv
+  /tmp/gevenv/bin/pip install -r src/data_processing/great_expectations/requirements.txt
+  TRINO_HOST=localhost PG_HOST=localhost \
+    /tmp/gevenv/bin/python src/data_processing/great_expectations/run_checkpoint.py
+  ```
+  Kết quả: checkpoint `fact_orders_items_awap` **PASSED**, cả 3 validation definition success — `fact_orders_items_window` (Trino snapshot) pass toàn bộ not_null/unique/range/status; `postgres_order_items_window` pass reference totals; `fact_vs_postgres_window` pass với `fact_items = 67.013`, `fact_units = 451.674`, `fact_revenue_cents = 33.652.418.088`, `items_delta = units_delta = revenue_cents_delta = 0`, `fact_price_mismatch_rows = 0`.
+
 ## 15, 18. Chưa làm
 
 - **Orchestration (Airflow)**, **BI (Superset/Metabase)** — thuộc Phase 3–4 trong `docs/data-platform.md`.
@@ -295,10 +330,10 @@ Trino 476 single-node đọc trực tiếp bảng Iceberg do Spark ghi, không c
 | Ch.5 Data Value | Metadata Decorator (cột metadata Bronze — `lakehouse/infrastructure/parquet_encoder.py`) |
 | Ch.6 Data Flow | Proxy / Readiness Marker (`_SUCCESS` — `lakehouse/application/writer.py`) |
 | Ch.8 Data Storage | Horizontal Partitioner (date `yyyy/mm/dd`), Manifest (`_manifest.json`) — `src/data_processing/lakehouse/`; Iceberg `days(_event_date)` + `bucket(16, order_id)` |
-| Ch.9 Data Quality | Schema Enforcer (Avro registry), một phần Gatekeeper (`validate_order`), dbt data tests + reconcile test (`src/data_processing/dbt/tests/`) |
+| Ch.9 Data Quality | Schema Enforcer (Avro registry), một phần Gatekeeper (`validate_order`), dbt data tests + reconcile test (`src/data_processing/dbt/tests/`), Great Expectations checkpoint (§20) |
 | Ch.10 Observability | Offline Observer (reconcile Job = drift detection) |
 
-**Gap chính:** Windowed Deduplicator, AWAP, full Star schema (dbt mới có staging + fact), Hybrid Consumer, Z-Order.
+**Gap chính:** AWAP publish gate (GE hiện audit sau khi Gold đã publish, chưa có quarantine/publish swap), full Star schema (dbt mới có staging + fact), Hybrid Consumer, Z-Order.
 
 ---
 
