@@ -31,6 +31,8 @@ resources:
 - lakehouse-bronze-writer.yaml
 - dbt.yaml
 - great-expectations.yaml
+- superset.yaml
+- cart-snapshot.yaml
 images:
 - name: adservice
   newName: ghcr.io/tritaolao14/adservice
@@ -61,6 +63,12 @@ images:
 - name: data_processing
   newName: ghcr.io/tritaolao14/data_processing
   newTag: 3ee300f61799ee4c25bb49c876d8241d431f7899
+# Superset image (src/superset). The dpfmd-40 tag is the bootstrap image the
+# operator builds before the first dev-ci run; dev-ci replaces it with the
+# commit SHA after the merge, as it does for every other service.
+- name: superset
+  newName: ghcr.io/tritaolao14/superset
+  newTag: dpfmd-40
 - name: emailservice
   newName: ghcr.io/tritaolao14/emailservice
   newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd

@@ -71,7 +71,7 @@ jobs:
           # until the dev overlay gained the Bronze writer Deployment
           # (DPFMD-46); it is now the image for that writer, built from
           # src/data_processing/Dockerfile.
-          ALLOWLIST="adservice cartservice checkoutservice currencyservice data_processing debezium dataingestion emailservice frontend paymentservice productcatalogservice recommendationservice shippingservice"
+          ALLOWLIST="adservice cartservice checkoutservice currencyservice data_processing debezium dataingestion emailservice frontend paymentservice productcatalogservice recommendationservice shippingservice superset"
 
           SERVICES=""
           for svc in $CHANGED; do

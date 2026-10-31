@@ -1,0 +1,275 @@
+# Apache Superset (DPFMD-40) — BI layer over the Gold fact in Trino.
+#
+# Dev-only, like dbt-build and great-expectations: the BI layer is not consumed
+# by staging/production yet, and the credentials below are the same plaintext
+# dev defaults as the rest of this overlay (TODO.md Sprint 3 moves them to
+# SealedSecret). The image is built from src/superset so the Trino SQLAlchemy
+# dialect is available and the dashboard bootstrap is versioned with the repo.
+#
+# The metadata database is dedicated to Superset: it has a different lifecycle
+# (migrations on every image rollout) and must not share product_catalog.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: superset-secrets
+  labels:
+    app: superset
+type: Opaque
+stringData:
+  SUPERSET_SECRET_KEY: "dev-only-superset-secret-key-change-in-sprint-3"
+  SUPERSET_ADMIN_PASSWORD: "admin"
+  SUPERSET_METADATA_PASSWORD: "superset_pass"
+  SUPERSET_METADATA_URI: "postgresql+psycopg2://superset:superset_pass@superset-metadata:5432/superset"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: superset-metadata-pvc
+  labels:
+    app: superset-metadata
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: superset-metadata
+  labels:
+    app: superset-metadata
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: superset-metadata
+  template:
+    metadata:
+      labels:
+        app: superset-metadata
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        env:
+        - name: POSTGRES_USER
+          value: "superset"
+        - name: POSTGRES_DB
+          value: "superset"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: superset-secrets
+              key: SUPERSET_METADATA_PASSWORD
+        # PGDATA lives in a subdirectory because the dev storage class can
+        # leave lost+found in the volume root, which initdb refuses to use.
+        - name: PGDATA
+          value: "/var/lib/postgresql/data/pgdata"
+        ports:
+        - name: postgres
+          containerPort: 5432
+        volumeMounts:
+        - name: metadata
+          mountPath: /var/lib/postgresql/data
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "superset", "-d", "superset"]
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "superset", "-d", "superset"]
+          initialDelaySeconds: 30
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            memory: 512Mi
+      volumes:
+      - name: metadata
+        persistentVolumeClaim:
+          claimName: superset-metadata-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: superset-metadata
+  labels:
+    app: superset-metadata
+spec:
+  selector:
+    app: superset-metadata
+  ports:
+  - name: postgres
+    port: 5432
+    targetPort: postgres
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: superset-home-pvc
+  labels:
+    app: superset
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: superset
+  labels:
+    app: superset
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: superset
+  template:
+    metadata:
+      labels:
+        app: superset
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      imagePullSecrets:
+      - name: ghcr-secret
+      initContainers:
+      # Migrations, default roles and the dashboard bootstrap are idempotent, so
+      # they can run on every pod start. The bootstrap needs the metadata
+      # Postgres; a failure restarts the pod until it is reachable, which is the
+      # readiness gate for the web process. Dataset SQL is not run here: Trino
+      # is queried when a chart loads, not during bootstrap.
+      - name: superset-init
+        image: superset
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -eu
+          superset db upgrade
+          superset init
+          python /app/bootstrap_superset.py
+        env:
+        - name: SUPERSET_CONFIG_PATH
+          value: /app/pythonpath/superset_config.py
+        - name: SUPERSET_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: superset-secrets
+              key: SUPERSET_SECRET_KEY
+        - name: SUPERSET_METADATA_URI
+          valueFrom:
+            secretKeyRef:
+              name: superset-secrets
+              key: SUPERSET_METADATA_URI
+        - name: SUPERSET_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: superset-secrets
+              key: SUPERSET_ADMIN_PASSWORD
+        - name: SUPERSET_TRINO_URI
+          value: "trino://superset@trino:8080/iceberg"
+        - name: PYTHONDONTWRITEBYTECODE
+          value: "1"
+        volumeMounts:
+        - name: superset-home
+          mountPath: /app/superset_home
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            memory: 1Gi
+      containers:
+      - name: superset
+        image: superset
+        imagePullPolicy: IfNotPresent
+        command: ["gunicorn"]
+        args:
+        - "--bind=0.0.0.0:8088"
+        - "--workers=2"
+        - "--worker-class=gthread"
+        - "--threads=4"
+        - "--timeout=120"
+        - "--error-logfile=-"
+        - "superset.app:create_app()"
+        env:
+        - name: SUPERSET_CONFIG_PATH
+          value: /app/pythonpath/superset_config.py
+        - name: SUPERSET_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: superset-secrets
+              key: SUPERSET_SECRET_KEY
+        - name: SUPERSET_METADATA_URI
+          valueFrom:
+            secretKeyRef:
+              name: superset-secrets
+              key: SUPERSET_METADATA_URI
+        - name: PYTHONDONTWRITEBYTECODE
+          value: "1"
+        ports:
+        - name: http
+          containerPort: 8088
+        volumeMounts:
+        - name: superset-home
+          mountPath: /app/superset_home
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 90
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 5
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: "2"
+            memory: 2Gi
+      volumes:
+      - name: superset-home
+        persistentVolumeClaim:
+          claimName: superset-home-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: superset
+  labels:
+    app: superset
+spec:
+  type: LoadBalancer
+  selector:
+    app: superset
+  ports:
+  - name: http
+    port: 8088
+    targetPort: http

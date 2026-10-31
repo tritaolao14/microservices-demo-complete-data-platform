@@ -47,6 +47,16 @@ RUN python -m venv /opt/ge \
 
 COPY great_expectations /opt/ge/project
 
+# Cart snapshot exporter (DPFMD-40) gets a fourth virtualenv for the same
+# reason: redis-py and psycopg2 must not move the writer's pins. It reads the
+# cartservice's Redis keys and writes analytics.cart_snapshots for Superset.
+RUN python -m venv /opt/cart \
+ && /opt/cart/bin/pip install --no-cache-dir \
+      redis==5.2.1 psycopg2-binary==2.9.10 \
+ && mkdir -p /opt/cart/project
+
+COPY cart_snapshot.py /opt/cart/project/cart_snapshot.py
+
 # The base image runs as root; this service only needs outbound network and a
 # writable /tmp, so drop privileges rather than running the consumer as root.
 RUN useradd --create-home --uid 10001 appuser \

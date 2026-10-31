@@ -12,11 +12,12 @@ The project has a partial data platform implementation with foundational infrast
 - PostgreSQL (Database)
 - Spark/Iceberg Configuration
 - Data Processing Scripts
+- Trino + dbt + Great Expectations (serving and quality)
+- Apache Superset BI dashboards (Trino datasource)
 
 ### Missing Components
 - Kafka Producer in checkoutservice
 - Data Ingestion Service
-- BI/Analytics Tools (Superset/Metabase)
 - Airflow Orchestration
 - Debezium CDC
 
@@ -68,10 +69,16 @@ The project has a partial data platform implementation with foundational infrast
     - CronJob `great-expectations` (`gitops/overlays/dev/great-expectations.yaml`) lúc `15 * * * *`, chạy sau `dbt-build`
     - Trino results materialized into a temp SQLite snapshot before GE validation; price check uses per-unit rounding tolerance
     - Runtime verify PASS (2026-10-31, exit 0): checkpoint `fact_orders_items_awap` PASSED, 67.013 fact items, deltas = 0, price mismatch = 0; xem `docs/data-engineering-patterns.md` §20 → `Đang chạy`
-- [ ] Deploy BI Dashboard
-  - [ ] Install Apache Superset or Metabase
-  - [ ] Configure connections to data warehouse
-  - [ ] Create sample dashboards
+- [x] Deploy BI Dashboard (DPFMD-40)
+  - [x] Install Apache Superset or Metabase
+    - Superset 4.1.2 image `src/superset/`, deployed by `gitops/overlays/dev/superset.yaml`
+    - Dedicated metadata Postgres `superset-metadata` + PVC; initContainer runs `superset db upgrade`/`superset init`
+  - [x] Configure connections to data warehouse
+    - Datasource `Trino Iceberg` → `trino://superset@trino:8080/iceberg`
+    - Idempotent bootstrap `src/superset/bootstrap_superset.py` creates admin, database, datasets, charts, dashboard
+  - [x] Create sample dashboards
+    - Dashboard `business-overview`: doanh thu theo giờ, sản phẩm bán chạy nhất, cart-but-no-pay
+    - Cart metric is a Redis snapshot proxy (`CronJob/cart-snapshot`, `src/data_processing/cart_snapshot.py`) because cartservice emits no events; see `docs/data-engineering-patterns.md` §18
 
 ### Sprint 3: Optimization & Expansion (Weeks 9-12)
 **Goal**: Optimize performance and expand data platform capabilities
