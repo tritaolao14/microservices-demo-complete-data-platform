@@ -60,7 +60,7 @@ images:
 # to build it and the tag below permanently unresolvable.
 - name: data_processing
   newName: ghcr.io/tritaolao14/data_processing
-  newTag: bf399dabdff2ca95d5a57aca4ea4b703527dfc26
+  newTag: 3ee300f61799ee4c25bb49c876d8241d431f7899
 - name: emailservice
   newName: ghcr.io/tritaolao14/emailservice
   newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
