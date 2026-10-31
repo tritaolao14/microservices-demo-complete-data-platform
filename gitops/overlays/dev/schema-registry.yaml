@@ -134,7 +134,7 @@ spec:
   selector:
     app: schema-registry
 ---
-# Creates the CDC topics with the partition count each one requires.
+# Creates the topics with the partition count each one requires.
 #
 # The broker has auto.create.topics.enable=true, but an auto-created topic
 # gets broker.num.partitions (1) partitions, which would silently violate the
@@ -143,6 +143,11 @@ spec:
 #
 # Format is "<topic>:<partitions>" per entry, so adding a connector means
 # adding one entry here rather than a new Job.
+#
+# DPFMD-36 also pins the raw-retention window of the `orders` source topic to
+# 30d (governance: raw 30d / bronze 90d). It is created here rather than left
+# to auto-creation so the retention config always exists, on an existing topic
+# too: kafka-configs --alter runs unconditionally after the create loop.
 #
 # Inspect with: kubectl -n onlineboutique-dev logs job/kafka-create-topic
 apiVersion: batch/v1
@@ -184,9 +189,12 @@ spec:
         # Same configurable-name pattern as dataingestion's KAFKA_RETRY_TOPIC,
         # so changing a topic does not require editing this script.
         - name: CDC_TOPICS
-          value: "cdc_product_changes:2 cdc_order_items:4"
+          value: "cdc_product_changes:2 cdc_order_items:4 orders:1"
         - name: CDC_REPLICATION_FACTOR
           value: "1"
+        # 30d of raw order events. The Bronze Iceberg table keeps 90d.
+        - name: ORDERS_RETENTION_MS
+          value: "2592000000"
         args:
         - |
           echo "waiting for broker kafka:9092 ..."
@@ -212,12 +220,46 @@ spec:
             echo "$DESCRIBE"
 
             ACTUAL_PARTITIONS=$(echo "$DESCRIBE" | sed -n 's/.*PartitionCount: \([0-9]*\).*/\1/p')
+
+            # --create --if-not-exists does not touch an existing topic, and a
+            # topic auto-created by its first producer gets 1 partition. Kafka
+            # can only grow a topic, never shrink it, so reconcile upward and
+            # fail loudly if the topic is larger than the declared shape.
+            if [ "$ACTUAL_PARTITIONS" -lt "$PARTITIONS" ]; then
+              echo "$TOPIC has $ACTUAL_PARTITIONS partitions, increasing to $PARTITIONS"
+              kafka-topics --bootstrap-server kafka:9092 \
+                --alter --topic "$TOPIC" --partitions "$PARTITIONS"
+              DESCRIBE=$(kafka-topics --bootstrap-server kafka:9092 \
+                --describe --topic "$TOPIC")
+              echo "$DESCRIBE"
+              ACTUAL_PARTITIONS=$(echo "$DESCRIBE" | sed -n 's/.*PartitionCount: \([0-9]*\).*/\1/p')
+            fi
             if [ "$ACTUAL_PARTITIONS" != "$PARTITIONS" ]; then
-              echo "ERROR: $TOPIC has $ACTUAL_PARTITIONS partitions, expected $PARTITIONS"
+              echo "ERROR: $TOPIC has $ACTUAL_PARTITIONS partitions, expected $PARTITIONS (Kafka cannot shrink a topic)"
               exit 1
             fi
             echo "topic $TOPIC ready with $ACTUAL_PARTITIONS partitions"
           done
+
+          # --create --if-not-exists never updates an existing topic, and the
+          # orders topic predates this Job (auto-created with the broker
+          # default of 7d). Alter the config explicitly so raw retention is
+          # 30d on an existing cluster too.
+          echo "--- enforcing retention.ms=$ORDERS_RETENTION_MS on orders"
+          kafka-configs --bootstrap-server kafka:9092 \
+            --alter --entity-type topics --entity-name orders \
+            --add-config "retention.ms=$ORDERS_RETENTION_MS"
+
+          # Verify rather than trusting the exit code, same as the partition
+          # check above.
+          ORDERS_CONFIGS=$(kafka-configs --bootstrap-server kafka:9092 \
+            --describe --entity-type topics --entity-name orders)
+          echo "$ORDERS_CONFIGS"
+          if ! echo "$ORDERS_CONFIGS" | grep -q "retention.ms=$ORDERS_RETENTION_MS"; then
+            echo "ERROR: orders retention.ms is not $ORDERS_RETENTION_MS"
+            exit 1
+          fi
+          echo "orders retention.ms=$ORDERS_RETENTION_MS confirmed"
         resources:
           requests:
             cpu: 50m

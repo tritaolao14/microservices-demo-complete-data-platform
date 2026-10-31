@@ -4,7 +4,7 @@ Tài liệu này liệt kê **các data engineering pattern đã áp dụng th�
 
 > **Quy tắc bắt buộc:** mỗi PR thay đổi hành vi data platform **phải cập nhật tài liệu này** trong cùng PR. Xem `AGENTS.md` → "Data Platform Documentation Rule".
 
-Cập nhật lần cuối: 2026-10-31 (DPFMD-49; tạo topic nội bộ Kafka Connect chuyển từ Job rời sang initContainer của `Deployment/debezium-connect` để bảo đảm thứ tự trên cluster sạch).
+Cập nhật lần cuối: 2026-10-31 (DPFMD-36; Bronze→Iceberg chuyển sang sync định kỳ có watermark `ingest_state`, thêm `bucket(16, order_id)`, retention raw 30d / bronze 90d và raw topic `orders` giữ 30d).
 
 
 ## Chú giải trạng thái
@@ -34,8 +34,8 @@ Cập nhật lần cuối: 2026-10-31 (DPFMD-49; tạo topic nội bộ Kafka Co
 | 13 | Object Storage / Data Lake | Đang chạy | `kubernetes-manifests/minio.yaml`, `src/data_processing/make_bucket_public.py`, `src/data_processing/lakehouse/sinks.py` |
 | 14 | Lakehouse / Iceberg Table Format | Đang chạy | `kubernetes-manifests/spark-iceberg-config.yaml`, `kubernetes-manifests/spark-bronze-orders.yaml`, `kubernetes-manifests/spark-bronze-orders.py` |
 | 14b | Bronze Layer Writer (Parquet + Manifest) | Đang chạy | `src/data_processing/lakehouse/`, `gitops/overlays/dev/lakehouse-bronze-writer.yaml:23` |
-| 14c | Iceberg Bronze Orders Bootstrap Job | Đang chạy | `kubernetes-manifests/spark-bronze-orders.yaml:15`, `kubernetes-manifests/spark-bronze-orders.py:67` |
-| 14d | Iceberg Table Maintenance (expire_snapshots + compaction) | Đang chạy | `kubernetes-manifests/spark-iceberg-maintenance.py:76`, `kubernetes-manifests/spark-iceberg-maintenance.yaml:26` |
+| 14c | Iceberg Bronze Incremental Sync (watermark `ingest_state`) | Đang chạy | `kubernetes-manifests/spark-bronze-orders.yaml:20`, `kubernetes-manifests/spark-bronze-orders.py:278` |
+| 14d | Iceberg Maintenance + Retention (7d snapshot / 90d bronze / 30d raw) | Đang chạy | `kubernetes-manifests/spark-iceberg-maintenance.py:113`, `kubernetes-manifests/spark-iceberg-maintenance.py:140` |
 | 15 | Orchestration (Airflow) | Chưa làm | roadmap Phase 3 |
 | 16 | Transformation (dbt / Star schema) | Chưa làm | roadmap Phase 3 |
 | 17 | Serving / Query Layer (Trino/ClickHouse) | Chưa làm | roadmap Phase 3 |
@@ -116,7 +116,7 @@ Cập nhật lần cuối: 2026-10-31 (DPFMD-49; tạo topic nội bộ Kafka Co
 - **Job trong overlay không được TTL đứng độc lập.** `ttlSecondsAfterFinished` xoá Job sau khi xong, còn ArgoCD vẫn muốn resource đó tồn tại ⇒ app `OutOfSync` trong khoảng ~60s mỗi chu kỳ TTL rồi tự tạo lại. Với 3 Job TTL 600s lệch pha trước đây, app `OutOfSync` ~27% thời gian — không bao giờ ổn định, dù `HEALTH=Healthy`.
   - `Job/debezium-register` và `Job/kafka-create-topic` dùng `argocd.argoproj.io/hook: PostSync` ⇒ ArgoCD không diff chúng, không còn vòng lặp TTL. Cả hai đều có vòng chờ riêng (`wait_for_api` trên REST API Connect; `kafka-broker-api-versions` trên broker) nên an toàn khi chạy PostSync.
   - `initContainer init-topics` **không dùng hook**: phải tạo topic nội bộ *trước khi* worker Kafka Connect khởi động (PostSync chạy sau ⇒ worker đã tự tạo topic sai với `cleanup.policy=delete`). Đã chuyển từ Job rời sang initContainer trong cùng pod `Deployment/debezium-connect`, nên thứ tự tuyệt đối được bảo đảm; file `gitops/overlays/dev/debezium-init-topics.yaml` đã xoá.
-  - `Job/spark-bronze-orders` (base, TTL 3600s) vẫn là Job TTL độc lập, chưa gắn hook ⇒ vẫn có thể gây `OutOfSync` ngắn mỗi giờ; xử lý sau.
+  - `CronJob/spark-bronze-orders` (DPFMD-36) thay `Job` TTL một lần ⇒ đối tượng trong git là CronJob ổn định, không còn OutOfSync mỗi giờ; Job con do CronJob sinh ra bị giới hạn `successfulJobsHistoryLimit` + TTL 1h nên không tích tụ.
   - `ttlSecondsAfterFinished` còn lại chỉ là backstop khi `kubectl apply` tay ngoài ArgoCD; hook thành công bị ArgoCD tự xoá.
 
 ## 11. Full / Incremental Batch Load + Upsert — Đang chạy
@@ -137,7 +137,7 @@ Cập nhật lần cuối: 2026-10-31 (DPFMD-49; tạo topic nội bộ Kafka Co
 ## 14. Lakehouse / Iceberg — Đang chạy
 
 - `ConfigMap/spark-iceberg-config`: JDBC catalog trên Postgres, warehouse `s3a://iceberg-warehouse/`, `S3FileIO` tới MinIO.
-- `Job/spark-bronze-orders`: bootstrap one-shot tạo namespace `bronze` và bảng `my_catalog.bronze.orders` (partition `days(_event_date)`), load dữ liệu từ Bronze Parquet landing zone `s3a://lakehouse/bronze/orders/` **chỉ khi bảng rỗng** (idempotent, an toàn khi re-run ArgoCD).
+- `CronJob/spark-bronze-orders`: mỗi giờ tạo/giữ bảng `my_catalog.bronze.orders` (partition `days(_event_date)` + `bucket(16, order_id)`) và sync các file Bronze Parquet mới từ `s3a://lakehouse/bronze/orders/` theo watermark `bronze.ingest_state`; merge theo `_row_id` nên an toàn khi chạy lại.
 - Chạy trên `apache/spark:3.5.3` với `--packages` (Iceberg runtime, AWS bundle, Hadoop S3A, Postgres JDBC), đọc config từ `spark-iceberg-config` ConfigMap.
 
 ## 14b. Bronze Layer Writer (MinIO Parquet) — Đang chạy
@@ -169,28 +169,29 @@ Cấu trúc theo **Clean Architecture (Ports & Adapters)**: `domain/` (entity + 
 - Đã verify E2E cục bộ: 3 event → 2 partition ngày (`2026/10/09`, `2026/10/10`), mỗi partition có Parquet + `_manifest.json` + `_SUCCESS`, đọc lại Parquet thấy đúng schema; 25 unit test (`pytest`, gồm roundtrip pyarrow) + ruff pass.
 - Phụ thuộc: `boto3`, `kafka-python`, `pyarrow` (`src/data_processing/requirements.in`).
 
-## 14c. Iceberg Bronze Orders Bootstrap Job — Đang chạy
+## 14c. Iceberg Bronze Incremental Sync (CronJob + watermark) — Đang chạy
 
-Job `spark-bronze-orders` (DPFMD-35) bootstrap bảng Iceberg `my_catalog.bronze.orders` từ Bronze landing zone:
+CronJob `spark-bronze-orders` (DPFMD-36, nối tiếp DPFMD-35) sync bảng Iceberg `my_catalog.bronze.orders` từ Bronze landing zone mỗi giờ (`37 * * * *`, `concurrencyPolicy: Forbid`):
 
-- **Manifest**: `kubernetes-manifests/spark-bronze-orders.yaml` (base, áp dụng cho mọi overlay).
-- **Driver**: `kubernetes-manifests/spark-bronze-orders.py` (ConfigMap `spark-bronze-orders-script`).
-- **Config**: đọc `spark-iceberg-config` ConfigMap (JDBC catalog `my_catalog` trên Postgres `product_catalog`, warehouse `s3a://iceberg-warehouse/`, `S3FileIO` MinIO, Hadoop `s3a` client cho Bronze source).
-- **Logic idempotent**: `CREATE TABLE IF NOT EXISTS` → kiểm tra `count(*)` → `INSERT INTO ... SELECT` từ `s3a://lakehouse/bronze/orders/` **chỉ khi bảng rỗng**. Re-run (ArgoCD sync) không duplicate.
-- **Bắt buộc `recursiveFileLookup=true`** khi đọc Bronze zone (`spark-bronze-orders.py:68`). Bronze partition theo `{yyyy}/{mm}/{dd}`; để Spark tự suy luận partition sẽ biến các segment số thành partition column, danh sách file thành rỗng và **fail `UNABLE_TO_INFER_SCHEMA` ở mọi thư mục cha** (chỉ leaf directory đọc được). Tắt suy luận thì cây thư mục thành tập file phẳng — không mất cột nào vì `_event_date` đã là cột thật bên trong Parquet. Trước khi sửa, lỗi này khiến Job **exit 0 với bảng rỗng** vì `try/except` nuốt exception — thành công giả, đã verify lại bằng data do chính writer DPFMD-34 sinh ra.
+- **Manifest**: `kubernetes-manifests/spark-bronze-orders.yaml` (base, áp dụng cho mọi overlay). Trước đây là `Job` TTL — chỉ chạy khi ArgoCD sync, nên bảng chỉ mới bằng lần sync gần nhất và `ttlSecondsAfterFinished` sinh OutOfSync mỗi giờ.
+- **Driver**: `kubernetes-manifests/spark-bronze-orders.py` (ConfigMap `spark-bronze-orders-script`). `BRONZE_SYNC_MODE=incremental` (mặc định, env trong CronJob); `bootstrap` chỉ còn là escape hatch chạy tay khi bảng bị xoá.
+- **Watermark**: bảng `my_catalog.bronze.ingest_state` (`source_path`, `rows`, `file_created_at`, `synced_at`) ghi tập file đã nạp. Mỗi vòng đọc `_manifest.json` của các partition ngày (không list toàn bucket), anti-join với state, sắp xếp theo path (cũ nhất trước) và giới hạn `BRONZE_SYNC_MAX_FILES` (mặc định 2000) để một backlog lớn được drain qua nhiều vòng thay vì một commit dài.
+- **Idempotency 3 lớp**: (1) file đã có trong state thì bỏ qua; (2) mỗi dòng có `_row_id = sha256(raw)` — `raw` chứa `order_id` do checkout sinh nên unique, replay Kafka ở offset mới vẫn trùng id và được dedupe; (3) `MERGE INTO ... ON _row_id` xử lý trường hợp crash giữa commit và ghi state. State chỉ được ghi **sau** khi merge commit.
+- **Migration DPFMD-35**: bảng cũ có 350 dòng với `_row_id = NULL`. Driver backfill `order_id = get_json_object(raw,'$.order_id')` và `_row_id` trước lần sync đầu, nên 350 dòng cũ được match thay vì insert lại; toàn bộ backlog chưa từng nạp vẫn được đưa vào.
+- **Bucket 16**: ticket ghi "Bucket 16 on user_id" nhưng event `orders` không có `user_id`, nên dùng khóa cardinality cao tự nhiên là `order_id`: `PARTITIONED BY (days(_event_date), bucket(16, order_id))`. Bảng cũ được `ALTER TABLE ... ADD PARTITION FIELD` (metadata-only, dữ liệu cũ giữ spec cũ).
+- **Bắt buộc `recursiveFileLookup=true`** ở chế độ bootstrap (`spark-bronze-orders.py:260`). Bronze partition theo `{yyyy}/{mm}/{dd}`; để Spark tự suy luận partition sẽ biến các segment số thành partition column, danh sách file thành rỗng và **fail `UNABLE_TO_INFER_SCHEMA` ở mọi thư mục cha**. Tắt suy luận thì cây thư mục thành tập file phẳng — không mất cột nào vì `_event_date` đã là cột thật bên trong Parquet. Trước khi sửa, lỗi này khiến Job **exit 0 với bảng rỗng** vì `try/except` nuốt exception — thành công giả.
 - **Packages**: Iceberg 1.6.1 (`iceberg-spark-runtime-3.5_2.12`, `iceberg-aws-bundle`), Postgres 42.7.3, Hadoop AWS 3.3.4, AWS SDK 1.12.262 (resolve via `--packages` runtime, ivy cache `/tmp/ivy`).
-- **Verify E2E**: seed Bronze Parquet → run Job → Iceberg metadata trong Postgres (`iceberg_tables`) + data files trong `s3a://iceberg-warehouse/bronze/orders/` → `SELECT count(*) FROM my_catalog.bronze.orders` trả về số dòng đúng.
+- **Verify E2E (kind-ci-local)**: bảng 350 dòng (bootstrap DPFMD-35) → sync 3 file/13 dòng → 363; sync tiếp 3 file → 377 dòng / 6 file trong `ingest_state`; xoá 3 state row để mô phỏng crash giữa MERGE và ghi state → sync lại thêm **0 dòng** (MERGE match `_row_id`), state trở lại 6. Kết quả cuối: `rows=377`, `distinct_row_ids=377`, `null_row_ids=0`, `duplicate_keys=0`; maintenance compaction sau đó không đổi số dòng.
 
 | Pattern (knowledge index) | Bằng chứng |
 |---------------------------|------------|
-| Full Loader (Ch.2) — bootstrap Iceberg table từ Parquet landing zone | `kubernetes-manifests/spark-bronze-orders.py:67` |
-| Partitioner (Ch.8) — `days(_event_date)` partition | `kubernetes-manifests/spark-bronze-orders.py:81` |
-| Idempotent Writer (Ch.4) — load only khi bảng rỗng | `kubernetes-manifests/spark-bronze-orders.py:73` |
-| Declarative Config Reconciliation (Ch.10) — Job base + ConfigMapGenerator | `kubernetes-manifests/kustomization.yaml:35` |
+| Incremental Loader / watermark (Ch.2) — `ingest_state` anti-join | `kubernetes-manifests/spark-bronze-orders.py:278` |
+| Idempotent Writer (Ch.4) — `_row_id` + `MERGE` + state sau commit | `kubernetes-manifests/spark-bronze-orders.py:278` |
+| Partitioner (Ch.8) — `days(_event_date)` + `bucket(16, order_id)` | `kubernetes-manifests/spark-bronze-orders.py:98` |
+| Full Loader (Ch.2) — bootstrap thủ công khi bảng rỗng | `kubernetes-manifests/spark-bronze-orders.py:240` |
+| Declarative Config Reconciliation (Ch.10) — CronJob base + ConfigMapGenerator | `kubernetes-manifests/kustomization.yaml:35` |
 
-> **Lỗi đã biết (DPFMD-35, phát hiện khi verify DPFMD-36):** `spark.read.parquet("s3a://lakehouse/bronze/orders/")` **không đọc được** — Spark trả `UNABLE_TO_INFER_SCHEMA`. Đo trực tiếp trên cluster: đọc leaf directory (`.../2026/10/08`) thành công, nhưng mọi thư mục cha (`.../2026/10`, `.../2026`, `.../orders`) đều fail. Do đó `try/except` ở `spark-bronze-orders.py:62` nuốt lỗi và **Job vẫn exit 0 với bảng rỗng**. Bronze Parquet do chính DPFMD-34 ghi ra (không phải dữ liệu dựng tay) cũng bị lỗi này. Sửa ở PR riêng.
-
-## 14d. Iceberg Table Maintenance (expire_snapshots + compaction) — Đang chạy
+## 14d. Iceberg Maintenance + Data Retention — Đang chạy
 
 CronJob `spark-iceberg-maintenance` (DPFMD-36) chạy bảo trì định kỳ cho `my_catalog.bronze.orders`.
 
@@ -210,13 +211,21 @@ Ticket DPFMD-36 viết bằng **ngôn ngữ Delta Lake**, nhưng DPFMD-35 tạo 
 - **CronJob**: `kubernetes-manifests/spark-iceberg-maintenance.yaml` — `schedule "23 4 * * *"`, `concurrencyPolicy: Forbid` (expire/rewrite đều commit cùng cấp metadata, không được chạy chồng).
 - **Policy nằm trong table properties**, không nhúng trong script: mọi client đọc bảng đều thấy cùng policy. Hằng số trong Python là nguồn sự thật duy nhất, vừa ghi vào bảng vừa truyền cho procedure ⇒ không thể lệch nhau.
 - Giá trị: `max-snapshot-age-ms=604800000` (7d, thay default 5d của Iceberg), `min-snapshots-to-keep=24` (thay default 1), compaction `min-input-files=2`, `target-file-size-bytes=128 MiB` (khớp `BRONZE_TARGET_FILE_BYTES` của DPFMD-34).
-- **Ràng buộc cứng**: `older_than` của `remove_orphan_files` **phải ≥** `history.expire.max-snapshot-age-ms`. Nếu đặt nhỏ hơn, một file còn được snapshot sống tham chiếu có thể bị xoá → **mất dữ liệu không báo lỗi**. Giá trị hiện tại: 3d.
+- **`remove_orphan_files`**: `older_than` (3d) chỉ cần lớn hơn thời gian một write đang chạy — file đang upload chưa có trong metadata nên trông như orphan. 3d an toàn tuyệt đối cho một Spark batch; **không** liên quan tới snapshot window (snapshot sống luôn được đối chiếu qua metadata trước khi xoá).
 - `remove_orphan_files` chạy `dry_run=true` mặc định (env `ICEBERG_ORPHAN_DRY_RUN`), chỉ đổi sang `false` sau khi xem kết quả.
 - Driver tự bỏ qua nếu bảng không dùng được (`table_exists`) — CronJob chạy trước bootstrap không được phép fail.
 
-**Chưa làm — retention theo tuổi dữ liệu ("30d/90d" trong ticket).** Iceberg **không có** policy tự động xoá partition theo tuổi; phải `DROP PARTITION` thủ công. Quan trọng hơn: hiện Bronze chỉ sync vào Iceberg **một lần lúc bootstrap** (`spark-bronze-orders.py:53`), nên prune Bronze Parquet trước khi có sync định kỳ sẽ xoá dữ liệu chưa từng vào Iceberg. Cần một subtask sync định kỳ trước.
+**Retention theo tuổi dữ liệu ("30d/90d" trong ticket) — đã làm.** Ticket viết theo Delta Lake ("bronze 30d, silver 90d"); repo chỉ có raw và bronze, và `governance.md` quy định raw 30d / bronze 90d. Ánh xạ:
 
-- **Verify E2E**: CronJob chạy exit 0; `SHOW TBLPROPERTIES` xác nhận đủ 4 property đã persist vào Iceberg metadata (`604800000`, `24`, `true`, `10`). *Giới hạn:* bảng chỉ có ≤1 snapshot nên `expire_snapshots` là no-op — test chứng minh procedure chạy đúng, **không** chứng minh việc xoá hoạt động.
+| Tầng | Thời gian | Cơ chế |
+|------|-----------|--------|
+| raw — topic Kafka `orders` | 30d | `retention.ms=2592000000` trong `Job/kafka-create-topic` (`gitops/overlays/dev/schema-registry.yaml`), alter cả topic đã tồn tại |
+| raw — Parquet landing zone | 30d | `prune_landing_zone()` xoá object đã có trong `bronze.ingest_state` và `file_created_at` quá hạn (`spark-iceberg-maintenance.py:140`); file chưa sync **không bao giờ** bị xoá |
+| bronze — bảng Iceberg | 90d | `DELETE FROM ... WHERE _event_date < current_date - 90d` (`spark-iceberg-maintenance.py:113`); Iceberg không có policy tự động nên đây là DELETE tường minh |
+
+Hai env `RAW_RETENTION_DAYS` / `BRONZE_RETENTION_DAYS` trong CronJob manifest cho phép chỉnh window; `RAW_PRUNE_DRY_RUN=true` để chỉ báo candidate mà không xoá.
+
+- **Verify E2E (kind-ci-local)**: driver chạy exit 0; `SHOW TBLPROPERTIES` xác nhận đủ 4 property đã persist (`604800000`, `24`, `true`, `10`). Với dữ liệu 2026-10-09/10 và hôm nay 2026-10-31, cutoff 90d = 2026-08-02 và 30d = 2026-10-01 → cả hai no-op đúng như log (`nothing to drop`, `nothing to prune`), chứng minh nhánh tính cutoff + query chạy đúng; `orders` retention.ms xác nhận `2592000000` trên cluster. Compaction, `expire_snapshots` và `remove_orphan_files` (dry-run) đều exit 0.
 
 ## 15–18. Chưa làm
 
@@ -231,12 +240,12 @@ Ticket DPFMD-36 viết bằng **ngôn ngữ Delta Lake**, nhưng DPFMD-35 tạo 
 
 | Nhóm chapter | Đã áp trong repo |
 |--------------|------------------|
-| Ch.2 Data Ingestion | Full Loader (`seed_database`), Incremental (order_items theo `event_timestamp`), CDC Replication (Debezium) |
+| Ch.2 Data Ingestion | Full Loader (`seed_database`), Incremental (order_items theo `event_timestamp`), Incremental Loader/watermark (`spark-bronze-orders` + `ingest_state`), CDC Replication (Debezium) |
 | Ch.3 Error Management | Dead-Letter (DLQ), Circuit Breaker/Retry |
 | Ch.4 Idempotency | Keyed Idempotency / Idempotent Writer (`ON CONFLICT DO NOTHING`), Transactional Writer (`lakehouse/application/writer.py`) |
 | Ch.5 Data Value | Metadata Decorator (cột metadata Bronze — `lakehouse/infrastructure/parquet_encoder.py`) |
 | Ch.6 Data Flow | Proxy / Readiness Marker (`_SUCCESS` — `lakehouse/application/writer.py`) |
-| Ch.8 Data Storage | Horizontal Partitioner (date `yyyy/mm/dd`), Manifest (`_manifest.json`) — `src/data_processing/lakehouse/` |
+| Ch.8 Data Storage | Horizontal Partitioner (date `yyyy/mm/dd`), Manifest (`_manifest.json`) — `src/data_processing/lakehouse/`; Iceberg `days(_event_date)` + `bucket(16, order_id)` |
 | Ch.9 Data Quality | Schema Enforcer (Avro registry), một phần Gatekeeper (`validate_order`) |
 | Ch.10 Observability | Offline Observer (reconcile Job = drift detection) |
 

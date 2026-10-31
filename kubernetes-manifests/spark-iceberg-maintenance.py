@@ -22,10 +22,18 @@ client reading the table sees the same policy. The constants below are the
 single source of truth and are both written to the table and used as the
 procedure arguments, so the two can never drift apart.
 
-Not covered by this script: data retention by age (the "30d/90d" part).
-Iceberg has no automatic age-based data retention -- dropping old partitions
-is an explicit rewrite that must never run before Bronze has been synced into
-Iceberg, which today happens only once at bootstrap (see spark-bronze-orders.py).
+Age-based retention ("30d/90d" in the ticket) is enforced here too. The
+lakehouse layers in this repo are raw (Kafka topic + Parquet landing zone) and
+bronze (this Iceberg table), and ``.agents/guides/lakehouse/governance.md``
+assigns raw 30d / bronze 90d, so that is the mapping used:
+
+    raw    30d   Kafka ``orders`` retention.ms + prune synced landing files
+    bronze 90d   DELETE from {table} where _event_date is older than the cutoff
+
+The landing-zone prune is guarded by ``bronze.ingest_state``: a Parquet file is
+only ever deleted after the sync job recorded it as loaded into Iceberg, so raw
+retention can never outrun bronze ingestion. Kafka retention is configured on
+the topic itself (``gitops/overlays/dev/schema-registry.yaml``).
 """
 
 import logging
@@ -43,6 +51,16 @@ log = logging.getLogger("iceberg.maintenance")
 CATALOG = "my_catalog"
 NAMESPACE = "bronze"
 TABLE = f"{CATALOG}.{NAMESPACE}.orders"
+STATE_TABLE = f"{CATALOG}.{NAMESPACE}.ingest_state"
+LANDING_URI = "s3a://lakehouse/"
+
+# Age-based retention, in days. Overridable so an operator can tighten or
+# disable (0 or a negative value) a window without rebuilding the image.
+RAW_RETENTION_DAYS = int(os.getenv("RAW_RETENTION_DAYS", "30"))
+BRONZE_RETENTION_DAYS = int(os.getenv("BRONZE_RETENTION_DAYS", "90"))
+# Deleting landing-zone objects is the destructive half of raw retention; keep
+# a dry-run switch so a first rollout can be inspected.
+RAW_PRUNE_DRY_RUN = os.getenv("RAW_PRUNE_DRY_RUN", "false").lower() == "true"
 
 # Snapshot retention. 7 days mirrors the ticket's "VACUUM 7d"; Iceberg's own
 # default is 5 days, so the value is set explicitly rather than relied upon.
@@ -51,11 +69,11 @@ SNAPSHOT_MAX_AGE_DAYS = 7
 # protects against a schedule that fires more often than the age cutoff.
 SNAPSHOTS_TO_KEEP = 24
 
-# Grace period for orphan cleanup. MUST be >= SNAPSHOT_MAX_AGE_DAYS: an orphan
-# file younger than the snapshot window may still be referenced by a live
-# snapshot, and delete_orphan_files only compares against current metadata.
-# A value below the snapshot window risks deleting files that are in use --
-# silent data loss with no error.
+# Grace period for orphan cleanup. Iceberg compares the warehouse listing against
+# current metadata, so this only has to exceed the longest in-flight write: a
+# file that a writer is still uploading is not in metadata yet and would look
+# like an orphan. Three days is far above a single Spark batch; lowering it to
+# seconds would risk deleting in-progress files.
 ORPHAN_GRACE_DAYS = 3
 
 # Compaction. target size matches BRONZE_TARGET_FILE_BYTES in the DPFMD-34
@@ -64,7 +82,9 @@ COMPACTION_TARGET_BYTES = 134_217_728  # 128 MiB
 COMPACTION_MIN_INPUT_FILES = 2
 
 TABLE_PROPERTIES = {
-    "history.expire.max-snapshot-age-ms": str(SNAPSHOT_MAX_AGE_DAYS * 24 * 60 * 60 * 1000),
+    "history.expire.max-snapshot-age-ms": str(
+        SNAPSHOT_MAX_AGE_DAYS * 24 * 60 * 60 * 1000
+    ),
     "history.expire.min-snapshots-to-keep": str(SNAPSHOTS_TO_KEEP),
     "write.metadata.delete-after-commit.enabled": "true",
     "write.metadata.previous-versions-max": "10",
@@ -90,6 +110,82 @@ def apply_table_properties(spark: SparkSession) -> None:
     log.info("applied %d table properties to %s", len(TABLE_PROPERTIES), TABLE)
 
 
+def enforce_bronze_retention(spark: SparkSession) -> None:
+    """Delete Iceberg rows older than the bronze retention window.
+
+    Iceberg has no automatic age-based retention, so this is an explicit DELETE.
+    It is safe to run before compaction: the delete commits new metadata and the
+    rewrite below then packs whatever rows remain.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=BRONZE_RETENTION_DAYS)).date()
+    stale = spark.sql(
+        f"SELECT count(*) AS n FROM {TABLE} WHERE _event_date < DATE '{cutoff.isoformat()}'"
+    ).first()["n"]
+    if stale == 0:
+        log.info(
+            "no Bronze row older than %s (retention=%dd); nothing to drop",
+            cutoff,
+            BRONZE_RETENTION_DAYS,
+        )
+        return
+    spark.sql(f"DELETE FROM {TABLE} WHERE _event_date < DATE '{cutoff.isoformat()}'")
+    log.info(
+        "dropped %d Bronze row(s) older than %s (retention=%dd)",
+        stale,
+        cutoff,
+        BRONZE_RETENTION_DAYS,
+    )
+
+
+def prune_landing_zone(spark: SparkSession) -> None:
+    """Delete landing-zone Parquet that was synced and is past raw retention.
+
+    Only paths recorded in ``ingest_state`` are candidates, so a file that has
+    not reached Iceberg yet is never removed no matter how old it looks. The
+    per-day manifest is left in place; the sync job filters by state, and the
+    manifest is only a few KB.
+    """
+    cutoff = _timestamp_literal(RAW_RETENTION_DAYS)
+    try:
+        stale = spark.sql(
+            f"SELECT source_path FROM {STATE_TABLE} "
+            f"WHERE source_path IS NOT NULL "
+            f"AND file_created_at < TIMESTAMP '{cutoff}'"
+        ).collect()
+    except Exception as exc:  # noqa: BLE001 - no state table means nothing was synced
+        log.warning(
+            "%s is not usable (%s); skipping landing-zone prune", STATE_TABLE, exc
+        )
+        return
+    if not stale:
+        log.info(
+            "no synced landing file older than %s (retention=%dd); nothing to prune",
+            cutoff,
+            RAW_RETENTION_DAYS,
+        )
+        return
+
+    jvm = spark._jvm
+    root = jvm.org.apache.hadoop.fs.Path(LANDING_URI)
+    fs = root.getFileSystem(spark._jsc.hadoopConfiguration())
+    deleted = 0
+    for row in stale:
+        path = jvm.org.apache.hadoop.fs.Path(LANDING_URI + row["source_path"])
+        if not fs.exists(path):
+            continue
+        if RAW_PRUNE_DRY_RUN:
+            continue
+        if fs.delete(path, False):
+            deleted += 1
+    log.info(
+        "landing-zone prune: %d candidate(s) older than %s, %d deleted (dry_run=%s)",
+        len(stale),
+        cutoff,
+        deleted,
+        RAW_PRUNE_DRY_RUN,
+    )
+
+
 def expire_snapshots(spark: SparkSession) -> None:
     """Drop snapshot history beyond the retention window.
 
@@ -103,7 +199,11 @@ def expire_snapshots(spark: SparkSession) -> None:
         f"older_than => TIMESTAMP '{older_than}', "
         f"retain_last => {SNAPSHOTS_TO_KEEP})"
     )
-    log.info("expired snapshots older than %s (retain_last=%d)", older_than, SNAPSHOTS_TO_KEEP)
+    log.info(
+        "expired snapshots older than %s (retain_last=%d)",
+        older_than,
+        SNAPSHOTS_TO_KEEP,
+    )
 
 
 def compact_data_files(spark: SparkSession) -> None:
@@ -147,13 +247,17 @@ def table_exists(spark: SparkSession) -> bool:
 
 
 def main() -> int:
-    spark = SparkSession.builder.appName("iceberg-bronze-orders-maintenance").getOrCreate()
+    spark = SparkSession.builder.appName(
+        "iceberg-bronze-orders-maintenance"
+    ).getOrCreate()
     try:
         if not table_exists(spark):
             return 0
         apply_table_properties(spark)
-        expire_snapshots(spark)
+        enforce_bronze_retention(spark)
         compact_data_files(spark)
+        prune_landing_zone(spark)
+        expire_snapshots(spark)
         remove_orphan_files(spark)
         log.info("maintenance finished for %s", TABLE)
         return 0
