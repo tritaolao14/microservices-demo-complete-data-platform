@@ -68,7 +68,7 @@ images:
 # commit SHA after the merge, as it does for every other service.
 - name: superset
   newName: ghcr.io/tritaolao14/superset
-  newTag: 14976448dee093104ef3cde57a6aa0ace177640e
+  newTag: c9fc355e52d9aba11cded1a4578efcd717d5ec68
 - name: emailservice
   newName: ghcr.io/tritaolao14/emailservice
   newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
