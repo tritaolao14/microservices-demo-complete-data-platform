@@ -29,7 +29,12 @@ on:
     paths:
       - 'src/**'
       - '.github/workflows/dev-ci.yaml'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      services:
+        description: "Space-separated services to build (blank = auto-detect)"
+        required: false
+        default: ""
 
 concurrency:
   group: dev-ci-${{ github.ref }}
@@ -51,19 +56,24 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: tritaolao14
-          password: ${{ secrets.GHCR_PAT }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Detect changed services
         id: changes
         run: |
-          BEFORE="${{ github.event.before }}"
-          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            BEFORE="HEAD~1"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+            && [ -n "${{ github.event.inputs.services }}" ]; then
+            CHANGED=$(echo "${{ github.event.inputs.services }}" | tr ' ' '\n' | sort -u)
+          else
+            BEFORE="${{ github.event.before }}"
+            if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              BEFORE="HEAD~1"
+            fi
+            CHANGED=$(git diff --name-only "$BEFORE" HEAD -- src/ \
+              | sed -n 's|^src/\([^/]*\)/.*|\1|p' \
+              | sort -u)
           fi
-          CHANGED=$(git diff --name-only "$BEFORE" HEAD -- src/ \
-            | sed -n 's|^src/\([^/]*\)/.*|\1|p' \
-            | sort -u)
 
           # Allowlist: only services with an image in the gitops overlay.
           # shoppingassistantservice and loadgenerator are excluded (not in the
