@@ -45,7 +45,9 @@ class KafkaLagCollector:
                     lag[topic] = 0
                     continue
                 end_offsets = consumer.end_offsets(topic_partitions)
-                committed = consumer.committed(topic_partitions)
+                committed = {
+                    tp: consumer.committed(tp) for tp in topic_partitions
+                }
                 lag[topic] = sum(
                     max(0, end_offsets.get(tp, 0) - (committed.get(tp) or 0))
                     for tp in topic_partitions

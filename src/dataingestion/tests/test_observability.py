@@ -193,7 +193,7 @@ def test_lag_collector_sums_partitions(mock_consumer_cls):
     tp0 = TopicPartition("orders", 0)
     tp1 = TopicPartition("orders", 1)
     consumer.end_offsets.return_value = {tp0: 100, tp1: 50}
-    consumer.committed.return_value = {tp0: 90, tp1: None}
+    consumer.committed.side_effect = lambda tp: {tp0: 90, tp1: None}[tp]
 
     collector = KafkaLagCollector("kafka:9092", "dataingestion", ["orders"])
 
