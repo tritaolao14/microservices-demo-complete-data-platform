@@ -200,6 +200,9 @@ def test_lag_collector_sums_partitions(mock_consumer_cls):
     assert collector.collect() == {"orders": 60}
     consumer.close.assert_called_once()
 
+    kwargs = mock_consumer_cls.call_args.kwargs
+    assert kwargs["request_timeout_ms"] > kwargs["session_timeout_ms"]
+
 
 @patch("infrastructure.kafka_lag.KafkaConsumer")
 def test_lag_collector_handles_missing_topic(mock_consumer_cls):

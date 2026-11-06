@@ -16,7 +16,7 @@ class KafkaLagCollector:
         broker: str,
         group_id: str,
         topics: Iterable[str],
-        timeout_ms: int = 5000,
+        timeout_ms: int = 11000,
     ) -> None:
         self._broker = broker
         self._group_id = group_id
@@ -29,6 +29,7 @@ class KafkaLagCollector:
             bootstrap_servers=[self._broker],
             group_id=self._group_id,
             enable_auto_commit=False,
+            session_timeout_ms=10000,
             request_timeout_ms=self._timeout_ms,
             consumer_timeout_ms=self._timeout_ms,
         )
