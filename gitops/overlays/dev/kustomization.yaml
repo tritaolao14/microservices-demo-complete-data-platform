@@ -70,6 +70,9 @@ images:
 - name: superset
   newName: ghcr.io/tritaolao14/superset
   newTag: 948f600a29e68e987299c4871940363ecf382b47
+- name: loadgenerator
+  newName: ghcr.io/tritaolao14/loadgenerator
+  newTag: 5e2c8d5b
 - name: emailservice
   newName: ghcr.io/tritaolao14/emailservice
   newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd

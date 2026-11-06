@@ -1,3 +1,4 @@
 locust==2.43.0
 faker==40.1.0
+kafka-python==2.2.3
 pg8000==1.31.2
