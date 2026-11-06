@@ -56,8 +56,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: tritaolao14
+          password: ${{ secrets.GHCR_PAT }}
 
       - name: Detect changed services
         id: changes
