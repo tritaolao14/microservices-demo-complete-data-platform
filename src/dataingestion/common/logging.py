@@ -3,10 +3,11 @@ import logging
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 PIPELINE_ID = os.getenv("PIPELINE_ID", "orders_ingestion")
 RUN_ID = uuid.uuid4().hex
+_UTC = timezone(timedelta(0))
 
 
 class JsonFormatter(logging.Formatter):
@@ -17,7 +18,7 @@ class JsonFormatter(logging.Formatter):
         if record.exc_info:
             error = self.formatException(record.exc_info)
         payload = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": datetime.now(_UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
