@@ -49,7 +49,7 @@ images:
   newTag: a9da207b0c3fde9af8bf9cc1ffaf204934a367cd
 - name: dataingestion
   newName: ghcr.io/tritaolao14/dataingestion
-  newTag: 45483a962448f4a5fc8655ee4c5d16f99ede3755
+  newTag: c7caf0d1f94c86bf6b5a86dac76fbaf31a6e7ba1
 - name: debezium
   newName: ghcr.io/tritaolao14/debezium
   newTag: ff1cf78ca35a9831e40be67186c7971822389575
