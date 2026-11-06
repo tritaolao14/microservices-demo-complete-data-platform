@@ -47,7 +47,7 @@ itsdangerous==2.2.0
     # via flask
 jinja2==3.1.6
     # via flask
-kafka-python==2.2.3
+kafka-python==2.3.2
     # via -r requirements.in
 locust==2.43.0
     # via -r requirements.in
@@ -60,7 +60,7 @@ msgpack==1.1.1
     # via locust
 packaging==25.0
     # via pytest
-pg8000==1.31.2
+pg8000==1.31.5
     # via -r requirements.in
 pluggy==1.6.0
     # via pytest
@@ -72,12 +72,14 @@ pytest==8.4.2
     # via locust
 python-dateutil==4.0.0
     # via pg8000
-python-engineio==4.12.2
+python-engineio==4.15.1
     # via
     #   locust
     #   python-socketio
-python-socketio==5.13.0
-    # via locust
+python-socketio==5.16.2
+    # via
+    #   -r requirements.in
+    #   locust
 pyzmq==27.1.0
     # via locust
 requests==2.32.5
