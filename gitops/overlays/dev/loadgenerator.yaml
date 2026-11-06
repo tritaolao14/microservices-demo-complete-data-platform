@@ -62,7 +62,7 @@ spec:
               - ALL
           privileged: false
           readOnlyRootFilesystem: true
-        image: ghcr.io/tritaolao14/loadgenerator:5e2c8d5b
+        image: loadgenerator
         imagePullPolicy: IfNotPresent
         env:
         - name: FRONTEND_ADDR
@@ -71,6 +71,16 @@ spec:
           value: "10"
         - name: RATE
           value: "1"
+        - name: KAFKA_ORDER_VARIANTS
+          value: "true"
+        - name: KAFKA_BROKER
+          value: "kafka:9092"
+        - name: KAFKA_TOPIC
+          value: "orders"
+        - name: KAFKA_RETRY_TOPIC
+          value: "orders_retry"
+        - name: KAFKA_DLQ_TOPIC
+          value: "orders_dlq"
         resources:
           requests:
             cpu: 300m
