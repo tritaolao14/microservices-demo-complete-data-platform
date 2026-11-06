@@ -33,6 +33,7 @@ resources:
 - great-expectations.yaml
 - superset.yaml
 - cart-snapshot.yaml
+- observability.yaml
 images:
 - name: adservice
   newName: ghcr.io/tritaolao14/adservice
