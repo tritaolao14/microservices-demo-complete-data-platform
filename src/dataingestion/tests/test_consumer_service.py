@@ -32,16 +32,16 @@ class FakeLogger:
         self.errors: list[str] = []
         self.exceptions: list[str] = []
 
-    def info(self, msg: str, *args) -> None:
+    def info(self, msg: str, *args, **kwargs) -> None:
         self.infos.append(msg % args if args else msg)
 
-    def warning(self, msg: str, *args) -> None:
+    def warning(self, msg: str, *args, **kwargs) -> None:
         self.warnings.append(msg % args if args else msg)
 
-    def error(self, msg: str, *args) -> None:
+    def error(self, msg: str, *args, **kwargs) -> None:
         self.errors.append(msg % args if args else msg)
 
-    def exception(self, msg: str, *args) -> None:
+    def exception(self, msg: str, *args, **kwargs) -> None:
         self.errors.append(msg % args if args else msg)
 
 

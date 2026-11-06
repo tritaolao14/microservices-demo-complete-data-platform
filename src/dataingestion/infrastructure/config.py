@@ -17,5 +17,8 @@ class InfraConfig:
     )
     postgres_max_retries: int = int(os.getenv("POSTGRES_MAX_RETRIES", "3"))
     postgres_retry_backoff_ms: int = int(os.getenv("POSTGRES_RETRY_BACKOFF_MS", "5000"))
+    metrics_port: int = int(os.getenv("METRICS_PORT", "9102"))
+    lag_poll_seconds: int = int(os.getenv("LAG_POLL_SECONDS", "15"))
+    pipeline_id: str = os.getenv("PIPELINE_ID", "orders_ingestion")
 
 

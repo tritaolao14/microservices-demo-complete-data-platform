@@ -49,6 +49,15 @@ spec:
           value: "latest"
         - name: POSTGRES_DSN
           value: "postgresql://boutique:boutique_pass@postgres:5432/product_catalog"
+        - name: PIPELINE_ID
+          value: "orders_ingestion"
+        - name: METRICS_PORT
+          value: "9102"
+        - name: LAG_POLL_SECONDS
+          value: "15"
+        ports:
+        - name: metrics
+          containerPort: 9102
         resources:
           requests:
             cpu: 100m
@@ -56,6 +65,20 @@ spec:
           limits:
             cpu: 200m
             memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dataingestion
+  labels:
+    app: dataingestion
+spec:
+  selector:
+    app: dataingestion
+  ports:
+  - name: metrics
+    port: 9102
+    targetPort: metrics
 ---
 apiVersion: v1
 kind: ServiceAccount
